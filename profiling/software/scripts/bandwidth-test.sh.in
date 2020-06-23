@@ -1,0 +1,41 @@
+#!/bin/sh
+# These values will be set by CMAKE flags
+buff_sz_min=@BUFFER_SIZE_MIN@
+buff_sz_max=@BUFFER_SIZE_MAX@
+repeats=@NUM_LOOPS_VALUE@
+
+printf "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" > bandwidth.xml
+printf "<profile-data>\n" >> bandwidth.xml
+# Run it on a single core
+printf "\t<bandwidth-test type=\"single\">\n" >> bandwidth.xml
+buff_sz=$buff_sz_min
+while [ $buff_sz -le $buff_sz_max ]
+do
+	echo "Running ./bandwidth_${buff_sz}_${repeats}. on a single core"
+  ./bandwidth_${buff_sz}_${repeats} > /dev/null 2>&1
+  printf "\t\t" >> bandwidth.xml
+	cat dump_${buff_sz}_${repeats}.xml>> bandwidth.xml
+  rm dump_${buff_sz}_${repeats}.xml
+  printf "\n" >> bandwidth.xml
+  buff_sz=$(( buff_sz * 2 ))	 # increments $n
+  
+done
+printf "\t</bandwidth-test>\n" >> bandwidth.xml
+
+## Run it on two cores
+printf "\t<bandwidth-test type=\"multi\">\n" >> bandwidth.xml
+buff_sz=$buff_sz_min
+while [ $buff_sz -le $buff_sz_max ]
+do
+	echo "Running ./bandwidth_${buff_sz}_${repeats}. on multi cores"
+  ./bandwidth_${buff_sz}_${repeats} --cfile=config.xml > /dev/null 2>&1
+  printf "\t\t" >> bandwidth.xml
+	cat dump_${buff_sz}_${repeats}.xml >> bandwidth.xml
+  rm dump_${buff_sz}_${repeats}.xml
+  printf "\n" >> bandwidth.xml
+  buff_sz=$(( buff_sz * 2 ))	 # increments $n
+  
+done
+printf "\t</bandwidth-test>\n" >> bandwidth.xml
+
+printf "</profile-data>\n" >> bandwidth.xml
