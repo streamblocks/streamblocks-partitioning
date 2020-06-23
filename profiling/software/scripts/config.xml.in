@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration>
+	<Partitioning>
+		<Partition id="0">
+			<Instance actor-id="TimedSource/0"/>
+		</Partition>
+		<Partition id="1">
+			<Instance actor-id="TimedSink/0"/>
+		</Partition>
+	</Partitioning>
+	<Scheduling type="RoundRobin"/>
+</Configuration>
