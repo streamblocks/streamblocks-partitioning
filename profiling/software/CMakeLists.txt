@@ -8,7 +8,7 @@ set(CMAKE_C_STANDARD 11)
 
 set(NUM_LOOPS_VALUE "100000000" CACHE STRING "Number repeated experiments")
 set(BUFFER_SIZE_MIN "32" CACHE STRING "Maximum size of the FIFOs")
-set(BUFFER_SIZE_MAX "32556" CACHE STRING "Minimum size of the FIFOs")
+set(BUFFER_SIZE_MAX "32768" CACHE STRING "Minimum size of the FIFOs")
 
 
 # -- Default C Flags
@@ -36,10 +36,16 @@ while(${buff_sz} LESS_EQUAL ${BUFFER_SIZE_MAX})
 
 	# message(STATUS "buff_sz=${buff_sz}")	
 	set(TARGET_NAME ${PROJECT_NAME}_${buff_sz}_${NUM_LOOPS_VALUE})
-	add_executable(${TARGET_NAME} src/main.cc src/timed_source.cc src/timed_sink.cc)
+	add_executable(${TARGET_NAME} src/main.cc src/timed_source.cc src/pass_through.cc)
 	target_include_directories(${TARGET_NAME} PRIVATE lib/art-runtime/include)
 	target_link_libraries(${TARGET_NAME} art-runtime )
 	target_compile_definitions(${TARGET_NAME} PRIVATE -DBUFFER_SIZE=${buff_sz} -DNUM_LOOPS=${NUM_LOOPS_VALUE})
+	set_target_properties(
+		${TARGET_NAME}
+		PROPERTIES 
+		CXX_STANDARD 14
+		CXX_STANDARD_REQUIRED YES
+	)
 	math(EXPR buff_sz "${buff_sz}*2")
 
 endwhile()

@@ -5,7 +5,7 @@
 			<Instance actor-id="TimedSource/0"/>
 		</Partition>
 		<Partition id="1">
-			<Instance actor-id="TimedSink/0"/>
+			<Instance actor-id="PassThrough/0"/>
 		</Partition>
 	</Partitioning>
 	<Scheduling type="RoundRobin"/>
