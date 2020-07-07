@@ -1,7 +1,10 @@
 package ch.epfl.vlsc.analysis.partitioning.phase;
 
+import ch.epfl.vlsc.analysis.partitioning.parser.MulticoreProfileDataBase;
+import ch.epfl.vlsc.analysis.partitioning.parser.MulticoreProfileParser;
 import ch.epfl.vlsc.analysis.partitioning.util.PartitionSettings;
 
+import ch.epfl.vlsc.settings.PlatformSettings;
 import gurobi.*;
 import org.w3c.dom.*;
 
@@ -37,56 +40,11 @@ import java.util.Map;
 
 public class PartitioningAnalysisPhase implements Phase {
 
-    private Map<Instance, Long> executionCost;
-    private Map<Connection, Long> commCost;
-    private Map<Connection, Integer> connectionWidth;
-    private Map<Connection, Integer> connectionDepth;
 
-    private final class MultiCoreBandwidthTicks {
-        private Long intra;
-        private Long inter;
-        private Integer bufferSize;
-        private Integer repeats;
-        public MultiCoreBandwidthTicks() {
-            this.intra = intra;
-            this.inter = inter;
-            this.bufferSize = 0;
-            this.repeats = 0;
-        }
-
-        public void setIntra(Long intra) {
-            this.intra = intra;
-        }
-        public void setInter(Long inter) {
-            this.inter = inter;
-        }
-        public void setBufferSize(Integer bufferSize) {
-            this.bufferSize = bufferSize;
-        }
-
-        public void setRepeats(Integer repeats) {
-            this.repeats = repeats;
-        }
-
-        public Integer getBufferSize() {
-            return bufferSize;
-        }
-
-        public Integer getRepeats() {
-            return repeats;
-        }
-
-        public Long getInter() {
-            return inter;
-        }
-        public Long getIntra() {
-            return intra;
-        }
-    }
+    MulticoreProfileDataBase multicoreDB;
+    Double multicoreClockPeriod;
 
 
-
-    private Map<Integer, MultiCoreBandwidthTicks> multicoreCommTicks;
     boolean definedMulticoreProfilePath;
     boolean definedSystemCProfilePath;
 
@@ -94,15 +52,14 @@ public class PartitioningAnalysisPhase implements Phase {
     boolean definedCoreCommProfilePath;
 
     public PartitioningAnalysisPhase() {
-        this.executionCost = new HashMap<Instance, Long>();
-        this.commCost = new HashMap<Connection, Long>();
-        this.connectionWidth = new HashMap();
-        this.connectionDepth = new HashMap<>();
-        this.multicoreCommTicks = new HashMap<>();
+        this.multicoreDB = null;
+        this.multicoreClockPeriod = 0.33;
+
         this.definedCoreCommProfilePath = false;
         this.definedOclProfilePath = false;
         this.definedSystemCProfilePath = false;
         this.definedMulticoreProfilePath = false;
+
     }
     @Override
     public String getDescription() {
@@ -175,8 +132,12 @@ public class PartitioningAnalysisPhase implements Phase {
         Network network = task.getNetwork();
 
         getRequiredSettings(task, context);
-
-        parseNetworkProfile(network, context);
+        MulticoreProfileParser multicoreParser = new MulticoreProfileParser(task, context, this.multicoreClockPeriod);
+        multicoreParser.parseExecutionProfile(context.getConfiguration().get(PartitionSettings.multiCoreProfilePath));
+        if (this.definedCoreCommProfilePath) {
+            multicoreParser.parseBandwidthProfile(context.getConfiguration().get(PartitionSettings.multicoreCommunicationProfilePath));
+        }
+        this.multicoreDB = multicoreParser.getDataBase();
         Map<Integer, List<Instance>> partitions = findPartitions(task, context);
         createConfig(partitions, context);
 
@@ -279,7 +240,8 @@ public class PartitioningAnalysisPhase implements Phase {
                 GRBLinExpr ticksExpr = new GRBLinExpr();
                 for (Instance instance : network.getInstances()) {
                     GRBVar partitionSelector = partitionVars.get(instance).get(part);
-                    Long instanceTicks = executionCost.get(instance);
+                    Long instanceTicks = this.multicoreDB.getInstanceTicks(instance);
+
                     ticksExpr.addTerm(instanceTicks, partitionSelector);
                 }
                 // partition ticks is the sum of ticks
@@ -319,35 +281,33 @@ public class PartitioningAnalysisPhase implements Phase {
                         for (int targetPart = 0; targetPart < numPartitions; targetPart++) {
                             GRBVar sourcePartVar = sourceVars.get(sourcePart);
                             GRBVar targetPartVar = targetVars.get(targetPart);
-                            Long tokensTransferred = commCost.get(connection);
-                            Integer tokenSize = connectionWidth.get(connection);
-                            Integer connectionBufferSize = tokenSize * connectionDepth.get(connection);
+                            Long tokensExchanged = this.multicoreDB.getTokensExchanged(connection);
+                            Integer tokenSize = this.multicoreDB.getSettings(connection).getWidth();
+                            Long intraTicks =
+                                    this.multicoreDB.getCommunicationTicks(connection)
+                                            .get(MulticoreProfileDataBase.CommunicationTicks.Kind.LocalCore);
+                            Long interTicks =
+                                    this.multicoreDB.getCommunicationTicks(connection)
+                                            .get(MulticoreProfileDataBase.CommunicationTicks.Kind.Core2Core);
 
-                            // get the next power of two
-                            connectionBufferSize =
-                                    (Integer.highestOneBit(connectionBufferSize) == connectionBufferSize) ?
-                                            connectionBufferSize:
-                                            Integer.highestOneBit(connectionBufferSize) << 1;
-                            Long intraTicks = Long.valueOf(0);
-                            Long interTicks = Long.valueOf(0);
-                            if (multicoreCommTicks.containsKey(connectionBufferSize)) {
-                                intraTicks = multicoreCommTicks.get(connectionBufferSize).getIntra();
-                                interTicks = multicoreCommTicks.get(connectionBufferSize).getInter();
-
-                                context.getReporter().report(
-                                        new Diagnostic(Diagnostic.Kind.INFO, String.format(
-                                                "connection buffer size %d, intra %d, inter %d",
-                                                connectionBufferSize, intraTicks, interTicks)));
-
-                            } else {
-                                context.getReporter().report(
-                                        new Diagnostic(Diagnostic.Kind.WARNING, "Missing profiling" +
-                                                "value for a buffer size of " + connectionBufferSize + " bytes"));
-
-                            }
+//                            if (multicoreCommTicks.containsKey(connectionBufferSize)) {
+//                                intraTicks = multicoreCommTicks.get(connectionBufferSize).getIntra();
+//                                interTicks = multicoreCommTicks.get(connectionBufferSize).getInter();
+//
+//                                context.getReporter().report(
+//                                        new Diagnostic(Diagnostic.Kind.INFO, String.format(
+//                                                "connection buffer size %d, intra %d, inter %d",
+//                                                connectionBufferSize, intraTicks, interTicks)));
+//
+//                            } else {
+//                                context.getReporter().report(
+//                                        new Diagnostic(Diagnostic.Kind.WARNING, "Missing profiling" +
+//                                                "value for a buffer size of " + connectionBufferSize + " bytes"));
+//
+//                            }
 
 
-                            Double commTime = Double.valueOf(tokensTransferred * tokenSize) / 4096;
+                            Double commTime = Double.valueOf(tokensExchanged * tokenSize) / 4096;
                             if (sourcePart == targetPart)
                                 commTime = commTime * intraTicks;
                             else
@@ -454,178 +414,8 @@ public class PartitioningAnalysisPhase implements Phase {
     }
 
 
-    private void parseConnection(Element connection, Network network, Context context) {
-
-        String source = stripAffinity(connection.getAttribute("src"));
-        String sourcePort = connection.getAttribute("src-port");
-        String target = stripAffinity(connection.getAttribute("dst"));
-        String targetPort = connection.getAttribute("dst-port");
-        Long bandwidth = Long.valueOf(connection.getAttribute("bandwidth"));
-        Integer tokenSize = Integer.valueOf(connection.getAttribute("token-size"));
-        Integer depth = Integer.valueOf(connection.getAttribute("size"));
-        network.getConnections().forEach(con -> {
-            if(con.getSource().getInstance().isPresent() && con.getTarget().getInstance().isPresent()) {
-                if (con.getSource().getInstance().get().equals(source) && con.getSource().getPort().equals(sourcePort) &&
-                con.getTarget().getInstance().get().equals(target) && con.getTarget().getPort().equals(targetPort))
-                    if(commCost.containsKey(con))
-                        throw new CompilationException(
-                                new Diagnostic(
-                                        Diagnostic.Kind.ERROR,
-                                        String.format("Duplicated bandwidth " +
-                                                "for connection %s.%s --> %s.%s",
-                                                source, sourcePort, target, targetPort)));
-
-                    else {
-
-                        context.getReporter().report(new Diagnostic(Diagnostic.Kind.INFO,
-                                String.format("Connection: %s.%s --> %s.%s  %d tokens",
-                                        source, sourcePort, target, targetPort, bandwidth)));
-                        commCost.put(con, bandwidth);
-                        connectionWidth.put(con, tokenSize);
-                        connectionDepth.put(con, depth);
-                    }
-            }
-        });
-
-    }
-
-    private void parseNetworkProfile(Network network, Context context) {
-
-        Path multicoreProfilePath = context.getConfiguration().get(PartitionSettings.multiCoreProfilePath);
-        try {
-
-            File profileXml = new File(multicoreProfilePath.toUri());
-            Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(profileXml);
-            // normalize the doc
-            doc.getDocumentElement().normalize();
-
-
-            NodeList instanceList = doc.getElementsByTagName("Instance");
-            for (int instanceId = 0; instanceId < instanceList.getLength(); instanceId ++) {
-
-                Node instNode = instanceList.item(instanceId);
-                if (instNode.getNodeType() == Node.ELEMENT_NODE) {
-                    Element instElem = (Element) instNode;
-                    parseInstance(instElem, network, context);
-
-
-                }
-
-            }
-
-            NodeList connectionList = doc.getElementsByTagName("Connection");
-
-            for (int connectionId = 0; connectionId < connectionList.getLength(); connectionId ++) {
-                Node conNode = connectionList.item(connectionId);
-                if (conNode.getNodeType() == Node.ELEMENT_NODE) {
-                    Element conElem = (Element) conNode;
-                    parseConnection(conElem, network, context);
-                }
-            }
-
-
-        } catch (Exception e) {
-            context.getReporter().report(
-                    new Diagnostic(Diagnostic.Kind.ERROR, "Error parsing profile data "
-                            + multicoreProfilePath.toString()));
-            e.printStackTrace();
-        }
-
-        parseMulticoreBandwidthProfile(context);
-    }
-
-    private void parseInstance(Element instance, Network network, Context context) {
-        String strippedName = stripAffinity(instance.getAttribute("actor-id"));
-        Long complexity = Long.valueOf(instance.getAttribute("complexity"));
-
-        network.getInstances().stream().forEach(inst -> {
-
-            if (inst.getInstanceName().equals(strippedName)) {
-                context.getReporter().report(
-                        new Diagnostic(Diagnostic.Kind.INFO,
-                                "Instance: " + strippedName + "  " +
-                                        complexity.toString() + " ticks "));
-                executionCost.put(inst, complexity);
-            }
-        });
-    }
-
-    private void parseMulticoreBandwidthProfile(Context context) {
-
-        // This should happen after parsing the main multicore profile
-        if (!definedCoreCommProfilePath) {
-            context.getReporter().report(
-                    new Diagnostic(Diagnostic.Kind.WARNING, "Skipping multicore bandwidth profile parse"));
-            return;
-        }
-        Path profilePath = context.getConfiguration().get(PartitionSettings.multicoreCommunicationProfilePath);
-
-        try {
-
-            File profileXml = new File(profilePath.toUri());
-            Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(profileXml);
-            // normalize the doc
-            doc.getDocumentElement().normalize();
-
-            NodeList bwList = doc.getElementsByTagName("bandwidth-test");
-            for(int ix = 0; ix < bwList.getLength(); ix++) {
-
-                Node bwNode = bwList.item(ix);
-                if (bwNode.getNodeType() == Node.ELEMENT_NODE) {
-                    Element bwElem = (Element) bwNode;
-                    boolean isIntra = bwElem.getAttribute("type").equals("single");
-
-                        NodeList conList = bwElem.getElementsByTagName("Connection");
-
-                        for (int jx = 0; jx < conList.getLength(); jx++) {
-
-                            Node conNode = conList.item(jx);
-                            if (conNode.getNodeType() == Node.ELEMENT_NODE) {
-                                Element conElem = (Element) conNode;
-                                Long ticks = Long.valueOf(conElem.getAttribute("ticks"));
-                                Integer repeats = Integer.valueOf(conElem.getAttribute("repeats"));
-                                Integer bufferSize = Integer.valueOf(conElem.getAttribute("buffer-size"));
-                                if (multicoreCommTicks.containsKey(bufferSize)) {
-                                    MultiCoreBandwidthTicks val = multicoreCommTicks.get(bufferSize);
-                                    if (isIntra)
-                                        val.setIntra(ticks);
-                                    else
-                                        val.setInter(ticks);
-                                    val.setRepeats(repeats);
-                                    val.setBufferSize(bufferSize);
-                                } else {
-                                    MultiCoreBandwidthTicks val = new MultiCoreBandwidthTicks();
-                                    if (isIntra)
-                                        val.setIntra(ticks);
-                                    else
-                                        val.setInter(ticks);
-                                    val.setRepeats(repeats);
-                                    val.setBufferSize(bufferSize);
-                                    multicoreCommTicks.put(bufferSize, val);
-                                }
-                            }
-                        }
-                }
-
-            }
-
-        } catch (Exception e) {
-            context.getReporter().report(
-                    new Diagnostic(Diagnostic.Kind.ERROR, "Error parsing profile data "
-                            + profilePath.toString()));
-            e.printStackTrace();
-        }
-
-        multicoreCommTicks.values().forEach(ticks -> {
-            context.getReporter().report(
-                    new Diagnostic(Diagnostic.Kind.INFO, String.format("buffer size = %d -> inter: %d, intra: %d",
-                            ticks.getBufferSize(), ticks.getInter(), ticks.getIntra())));
-
-        });
-
-    }
     private Long ticksUpperBound() {
-        return executionCost.values().stream().reduce((a, b) -> a + b).get();
+        return this.multicoreDB.getExecutionProfileDataBase().values().stream().reduce((a, b) -> a + b).get();
     }
 
 

@@ -5,6 +5,7 @@ import se.lth.cs.tycho.compiler.Compiler;
 import se.lth.cs.tycho.ir.util.ImmutableList;
 import se.lth.cs.tycho.phase.*;
 import se.lth.cs.tycho.platform.Platform;
+import ch.epfl.vlsc.phases.*;
 
 import java.util.List;
 
@@ -24,6 +25,7 @@ public class PartitioningAnalysisPlatform implements Platform {
     private static final List<Phase> phases = ImmutableList.<Phase>builder()
             .addAll(Compiler.frontendPhases())
             .addAll(Compiler.networkElaborationPhases())
+            .add(new VerilogNameCheckerPhase())
             .add(new PartitioningAnalysisPhase())
             .build();
 

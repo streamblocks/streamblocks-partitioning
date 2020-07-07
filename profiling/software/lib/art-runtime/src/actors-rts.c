@@ -330,6 +330,7 @@ AbstractActorInstance *createActorInstance(ActorClass *actorClass) {
                                                sizeof(*result->output));
     result->parameter = NULL;
     result->affinity = -1;
+    AbstractActorInstance * res = (AbstractActorInstance *) result;
     return (AbstractActorInstance *) result;
 }
 
