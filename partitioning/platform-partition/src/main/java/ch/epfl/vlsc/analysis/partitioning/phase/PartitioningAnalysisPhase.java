@@ -164,7 +164,7 @@ public class PartitioningAnalysisPhase implements Phase {
                 partitionRoot.setAttribute("id", partition.toString());
                 instances.forEach( instance -> {
                     Element instanceRoot = doc.createElement("Instance");
-                    instanceRoot.setAttribute("actor-id", instance.getInstanceName() + "/0");
+                    instanceRoot.setAttribute("actor-id", instance.getInstanceName());
                     partitionRoot.appendChild(instanceRoot);
                 });
                 partitioningRoot.appendChild(partitionRoot);
