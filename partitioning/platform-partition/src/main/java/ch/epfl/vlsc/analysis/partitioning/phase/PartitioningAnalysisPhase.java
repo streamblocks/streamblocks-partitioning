@@ -271,47 +271,25 @@ public class PartitioningAnalysisPhase implements Phase {
 
                     List<GRBVar> sourceVars = partitionVars.get(sourceInstance);
                     List<GRBVar> targetVars = partitionVars.get(targetInstance);
-
-//                    Long intraTicks = Long.valueOf(256);
-//                    Long interTicks = Long.valueOf(5617);
-
                     GRBQuadExpr sumOfProducts = new GRBQuadExpr();
                     for (int sourcePart = 0; sourcePart < numPartitions; sourcePart++) {
 
                         for (int targetPart = 0; targetPart < numPartitions; targetPart++) {
                             GRBVar sourcePartVar = sourceVars.get(sourcePart);
                             GRBVar targetPartVar = targetVars.get(targetPart);
-                            Long tokensExchanged = this.multicoreDB.getTokensExchanged(connection);
-                            Integer tokenSize = this.multicoreDB.getSettings(connection).getWidth();
-                            Long intraTicks =
-                                    this.multicoreDB.getCommunicationTicks(connection)
-                                            .get(MulticoreProfileDataBase.CommunicationTicks.Kind.LocalCore);
-                            Long interTicks =
-                                    this.multicoreDB.getCommunicationTicks(connection)
-                                            .get(MulticoreProfileDataBase.CommunicationTicks.Kind.Core2Core);
+                            Double intraTicks =
+                                    this.multicoreDB.getCommunicationTicks(connection,
+                                            MulticoreProfileDataBase.CommunicationTicks.Kind.LocalCore);
 
-//                            if (multicoreCommTicks.containsKey(connectionBufferSize)) {
-//                                intraTicks = multicoreCommTicks.get(connectionBufferSize).getIntra();
-//                                interTicks = multicoreCommTicks.get(connectionBufferSize).getInter();
-//
-//                                context.getReporter().report(
-//                                        new Diagnostic(Diagnostic.Kind.INFO, String.format(
-//                                                "connection buffer size %d, intra %d, inter %d",
-//                                                connectionBufferSize, intraTicks, interTicks)));
-//
-//                            } else {
-//                                context.getReporter().report(
-//                                        new Diagnostic(Diagnostic.Kind.WARNING, "Missing profiling" +
-//                                                "value for a buffer size of " + connectionBufferSize + " bytes"));
-//
-//                            }
+                            Double interTicks =
+                                    this.multicoreDB.getCommunicationTicks(connection,
+                                            MulticoreProfileDataBase.CommunicationTicks.Kind.Core2Core);
 
-
-                            Double commTime = Double.valueOf(tokensExchanged * tokenSize) / 4096;
+                            Double commTime = Double.valueOf(0);
                             if (sourcePart == targetPart)
-                                commTime = commTime * intraTicks;
+                                commTime = intraTicks;
                             else
-                                commTime = commTime * interTicks;
+                                commTime = interTicks;
                             sumOfProducts.addTerm(commTime, sourcePartVar, targetPartVar);
 
                         }

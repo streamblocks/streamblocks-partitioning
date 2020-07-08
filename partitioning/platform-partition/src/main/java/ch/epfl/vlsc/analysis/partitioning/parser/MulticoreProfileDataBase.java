@@ -153,14 +153,31 @@ public class MulticoreProfileDataBase {
         return execDb.get(instance);
     }
 
-    public CommunicationTicks getCommunicationTicks(Connection connection) {
+    /**
+     * Computes the communication ticks for a given connection and its kind. Since we have a
+     * database of communication ticks for limited number of buffer sizes (32, 64, ... bytes)
+     * then if the connection has a custom size e.g. 3421 tokens capacity, we have to find
+     * the nearest known buffer size ticks. Then we use compute how many full buffer transfers
+     * are to be made based on the number tokens that are transferred over a fifo and we compute
+     * the estimated communication ticks either LocalCore or Core2Core
+     * @param connection the connection to compute its estimated ticks
+     * @param kind the kind of the connection, LocalCore or Core2Core
+     * @return Double value that estimates the communication ticks (not time) of the given connection
+     */
+    public Double getCommunicationTicks(Connection connection, CommunicationTicks.Kind kind) {
         Integer connectionBufferSizeBytes = this.getSettings(connection).getDepth() *
                 this.getSettings(connection).getWidth();
         Integer nextProfiledBufferSizeBytes =
                 (Integer.highestOneBit(connectionBufferSizeBytes) == connectionBufferSizeBytes) ?
                     connectionBufferSizeBytes :
                     Integer.highestOneBit(connectionBufferSizeBytes) << 1;
-        return this.bwDb.get(nextProfiledBufferSizeBytes);
+        // Number of ticks it takes to transfer nextProfiledBufferSizeBytes bytes over either
+        // core to core or local core fifos
+        CommunicationTicks ticksPerTx = this.bwDb.get(nextProfiledBufferSizeBytes);
+        Long tokensExchanged = this.getTokensExchanged(connection);
+        Double numTx = tokensExchanged.doubleValue() / nextProfiledBufferSizeBytes.doubleValue();
+        return numTx * ticksPerTx.get(kind);
+
     }
 
     public CommunicationTicks getCommunicationTicks(Integer bufferSize) {
