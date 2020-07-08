@@ -1,5 +1,7 @@
 package ch.epfl.vlsc.analysis.partitioning.phase;
 
+import ch.epfl.vlsc.analysis.partitioning.parser.CommonProfileDataBase;
+import ch.epfl.vlsc.analysis.partitioning.parser.DeviceProfileDataBase;
 import ch.epfl.vlsc.analysis.partitioning.parser.MulticoreProfileDataBase;
 import ch.epfl.vlsc.analysis.partitioning.parser.MulticoreProfileParser;
 import ch.epfl.vlsc.analysis.partitioning.util.PartitionSettings;
@@ -33,16 +35,17 @@ import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
 import java.io.File;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
 
 public class PartitioningAnalysisPhase implements Phase {
 
 
     MulticoreProfileDataBase multicoreDB;
-    Double multicoreClockPeriod;
+    DeviceProfileDataBase accelDB;
+
+    Double multicoreClockPeriod; // in NS
+    Double accelClockPeriod; // in NS
 
 
     boolean definedMulticoreProfilePath;
@@ -53,8 +56,8 @@ public class PartitioningAnalysisPhase implements Phase {
 
     public PartitioningAnalysisPhase() {
         this.multicoreDB = null;
-        this.multicoreClockPeriod = 0.33;
-
+        this.multicoreClockPeriod = 0.33; // about 3 GHz
+        this.accelClockPeriod = 3.3; // about 300 MHz
         this.definedCoreCommProfilePath = false;
         this.definedOclProfilePath = false;
         this.definedSystemCProfilePath = false;
@@ -184,7 +187,19 @@ public class PartitioningAnalysisPhase implements Phase {
         }
 
     }
+    private class InstancePartitionVariables {
+        private Map<String, GRBVar> b_i_p;
+        public InstancePartitionVariables () {
+            this.b_i_p = new HashMap<>();
+        }
+        public void put(String p, GRBVar var) {
+            this.b_i_p.put(p, var);
+        }
+        public GRBVar get(String p) {
+            return b_i_p.get(p);
+        }
 
+    }
     private Map<Integer, List<Instance>> findPartitions(CompilationTask task, Context context) {
 
         Network network = task.getNetwork();
@@ -205,8 +220,272 @@ public class PartitioningAnalysisPhase implements Phase {
 
             GRBModel model = new GRBModel(env);
 
-            // Set the objective to minimize total ticks
+            // create the objective expression
             GRBLinExpr objectiveExpr = new GRBLinExpr();
+
+
+            int numberOfCores = context.getConfiguration().get(PartitionSettings.cpuCoreCount);
+            if (numberOfCores < 1) {
+                throw new CompilationException(
+                        new Diagnostic(Diagnostic.Kind.ERROR, String.format("Invalid number of cores %d, " +
+                                "number of cores should be larger that 0.", numberOfCores)));
+            }
+
+            // Set of all partitions
+            Set<String> P = new HashSet<>();
+            // (Set) of all instances
+            ImmutableList<Instance> I = network.getInstances();
+            // (Set) of all connections
+            ImmutableList<Connection> C = network.getConnections();
+
+
+            /**
+             * The set of all partitions is P = {c_m : 1 \leq m \leq numberOfCores} \cup {accel}
+             */
+            int numberOfPartitions = numberOfCores + (this.definedSystemCProfilePath ? 1 : 0);
+
+            String accelPartition = "accel";
+            String plinkPartition = "core_0";
+
+            P.add(plinkPartition);
+            for (int p = 1; p < numberOfCores; p++)
+                P.add("core_" + p );
+            if (this.definedSystemCProfilePath)
+                P.add(accelPartition);
+
+            // A map from instances to their associated variables
+            Map<Instance, InstancePartitionVariables> instanceVariables = new HashMap<>();
+
+            /**
+             * instantiate the GRBVariables b^i_p for each instance and create the constraint:
+             *  \forall i \in I: \sum_{p \in P} b^i_p = 1
+             */
+            for (Instance i: I) {
+
+                InstancePartitionVariables b_i = new InstancePartitionVariables();
+                GRBLinExpr constraintExpr = new GRBLinExpr();
+                for (String p : P) {
+
+                    GRBVar b_i_p = model.addVar(0.0, 1.0, 0.0, GRB.BINARY, String.format("b^{%s}_{%s}",
+                            i.getInstanceName(), p));
+                    b_i.put(p, b_i_p);
+                    constraintExpr.addTerm(1.0, b_i_p);
+                }
+
+                instanceVariables.put(i, b_i);
+                model.addConstr(constraintExpr, GRB.EQUAL, 1.0,
+                        String.format("%s:unique_partition", i.getInstanceName()));
+            }
+
+            /**
+             * Define the PLINK variables
+             * t^{plink}_{kernel} = max(\{b^i_\{accel\} \times t^i_{exec}(accel): i \in I\})
+             * t^{plink}_{write} = \sum_{(l, k) \in C} (1 - b^l_{accel}) b^k_{accel} n_{(l,k)} bw^{(l, k)}(ca)
+             * t^{plink}_{read} = \sum_{(l, k) \in C} b^l_{accel}(1 - b^k_{accel}) n_{(l,k)} bw^{(l, k)}(ca)
+             *
+             */
+            // Total time spent by PLINK
+            Optional<GRBVar> T_plink = Optional.empty();
+            Double upperPlinkTime = Double.valueOf(0);
+            if (this.definedSystemCProfilePath) {
+
+                // First off, the kernel time
+                // terms list for t^{plink}_{kernel} = max(\{b^i_\{accel\} \times t^i_{exec}(accel): i \in I\})
+                List<GRBVar> termsList = new ArrayList<>();
+                for (Instance i : I) {
+
+                    Double t_i_exec_accel = this.accelDB.getInstanceTicks(i).doubleValue() * this.accelClockPeriod;
+
+                    GRBVar b_i_accel_t_i_exec_product =  model.addVar(0.0,
+                            t_i_exec_accel, 0.0, GRB.CONTINUOUS,
+                            String.format("b^%s_{accel}xt^%1$s_{exec}(accel)", i.getInstanceName()));
+                    GRBLinExpr expr = new GRBLinExpr();
+
+                    // The time of each instance on the FPGA =  ticks * clockPeriod
+
+                    GRBVar b_i_accel = instanceVariables.get(i).get(accelPartition);
+                    expr.addTerm(t_i_exec_accel, b_i_accel);
+                    model.addConstr(expr, GRB.EQUAL, b_i_accel_t_i_exec_product,
+                            String.format("b_%s_{accel}_t_%1$s_{exec}=b^%1$s_{accel}xt^%1$s_{exec}(accel)",
+                                    i.getInstanceName()));
+                    termsList.add(b_i_accel_t_i_exec_product);
+                }
+                // The upper bound on the accel partion is the maximum of all instance times, while the upper
+                // bound on a multicore partition is the sum of all instance times
+                Double upperAccelTime = Collections.max(
+                        this.accelDB.getExecutionProfileDataBase().values())
+                        .doubleValue() * this.accelClockPeriod;
+                GRBVar t_plink_kernel = model.addVar(0.0, upperAccelTime, 0.0, GRB.CONTINUOUS,
+                        "t_plink_kernel");
+
+                GRBVar[] maxTermsArray = termsList.toArray(new GRBVar[termsList.size()]);
+
+                model.addGenConstrMax(t_plink_kernel, maxTermsArray, 0.0,
+                        "t^{plink}_{kernel}=max(\\{b^i_\\{accel\\}\\timest^i_{exec}(accel):i\\inI\\})");
+
+                upperPlinkTime += upperAccelTime;
+                // Second, the read and write time
+                // Using t^{plink}_{write} = \sum_{(l, k) \in C} (1 - b^l_{accel}) b^k_{accel} n_{(l,k)} bw^{(l, k)}(ca)
+
+                GRBLinExpr writeSumExpr = new GRBLinExpr();
+                Double upperTxTime = Double.valueOf(0);
+                for (Connection c: C) {
+
+                    // Source instance
+                    Instance l = findSourceInstance(c.getSource(), network);
+
+                    // Target instance
+                    Instance k = findTargetInstance(c.getTarget(), network);
+
+                    GRBVar b_l_accel = instanceVariables.get(l).get(accelPartition);
+                    // b_k_accel
+                    GRBVar b_k_accel = instanceVariables.get(k).get(accelPartition);
+                    // 1 - b_l_accel
+
+                    GRBVar b_l_accel_neg = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
+                            String.format("~b_{%s}_{accel}", l.getInstanceName()));
+                    GRBLinExpr expr_b_l_accel_neg = new GRBLinExpr();
+                    expr_b_l_accel_neg.addConstant(1.0);
+                    expr_b_l_accel_neg.addTerm(-1.0, b_l_accel);
+
+                    model.addConstr(b_l_accel_neg, GRB.EQUAL, expr_b_l_accel_neg, String.format("(1-b_%s_accel)",
+                            l.getInstanceName()));
+
+                    GRBVar b_l_accel_neg_and_b_k_accel = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
+                            String.format("(1-b_%s_accel)b_%s_accel", l.getInstanceName(), k.getInstanceName()));
+                    GRBVar[] argsAnd = new GRBVar[2];
+                    argsAnd[0] = b_l_accel_neg;
+                    argsAnd[1] = b_k_accel;
+                    model.addGenConstrAnd(b_l_accel_neg_and_b_k_accel, argsAnd,
+                            String.format("constraint:(1-b_%s_accel)b_%s_accel",
+                                    l.getInstanceName(), k.getInstanceName()));
+                    Double txTime = this.accelDB.getCommunicationTime(c,
+                            CommonProfileDataBase.CommunicationTicks.Kind.External);
+                    writeSumExpr.addTerm(txTime, b_l_accel_neg_and_b_k_accel);
+                    upperTxTime += txTime;
+
+                }
+
+                GRBVar t_plink_write = model.addVar(0.0, upperTxTime, 0.0, GRB.CONTINUOUS,
+                        String.format("t_plink_write"));
+                model.addConstr(t_plink_write, GRB.EQUAL, writeSumExpr, "t_plink_write=...");
+
+                upperPlinkTime += upperTxTime;
+                // Finally, the read time
+                // t^{plink}_{read} = \sum_{(l, k) \in C} b^l_{accel}(1 - b^k_{accel}) n_{(l,k)} bw^{(l, k)}(ca)
+
+                GRBLinExpr readSumExpr = new GRBLinExpr();
+                Double upperRxTime = Double.valueOf(0);
+
+                for (Connection c: C) {
+
+                    // Source instance
+                    Instance l = findSourceInstance(c.getSource(), network);
+                    // Target instance
+                    Instance k = findTargetInstance(c.getTarget(), network);
+                    // b_l_accel
+                    GRBVar b_l_accel = instanceVariables.get(l).get(accelPartition);
+                    // b_k_accel
+                    GRBVar b_k_accel = instanceVariables.get(k).get(accelPartition);
+
+                    // 1 - b_k_accel
+                    GRBVar b_k_accel_neg = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
+                            String.format("~b_{%s}_{accel}", k.getInstanceName()));
+
+                    GRBLinExpr expr_b_k_accel_neg = new GRBLinExpr();
+                    expr_b_k_accel_neg.addConstant(1.0);
+                    expr_b_k_accel_neg.addTerm(-1.0, b_k_accel);
+
+                    model.addConstr(b_k_accel_neg, GRB.EQUAL, expr_b_k_accel_neg,
+                            String.format("(1-b_%s_accle)", k.getInstanceName()));
+
+                    GRBVar b_k_accel_neg_and_b_l_accel = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
+                            String.format("(1-b_%s_accel)b_%s_accel", k.getInstanceName(), l.getInstanceName()));
+                    GRBVar[] argsAnd = new GRBVar[2];
+                    argsAnd[0] = b_l_accel;
+                    argsAnd[1] = b_k_accel_neg;
+
+                    model.addGenConstrAnd(b_k_accel_neg_and_b_l_accel, argsAnd,
+                            String.format("constraint:(1-b_%s_accel)b_%s_accel",
+                                    k.getInstanceName(), l.getInstanceName()));
+
+                    Double rxTime = this.accelDB.getCommunicationTime(c,
+                            CommonProfileDataBase.CommunicationTicks.Kind.External);
+
+                    readSumExpr.addTerm(rxTime, b_k_accel_neg_and_b_l_accel);
+                    upperRxTime += rxTime;
+
+                }
+                GRBVar t_plink_read = model.addVar(0, upperRxTime, 0.0 , GRB.CONTINUOUS,
+                        String.format("t_plink_read"));
+
+                model.addConstr(t_plink_read, GRB.EQUAL, readSumExpr, "t_plink_read=...");
+
+                // We assume the PLINK is synchronous
+                GRBVar real_T_plink = model.addVar(0.0, upperAccelTime + upperRxTime + upperTxTime,
+                        0.0, GRB.CONTINUOUS, String.format("T_plink"));
+                GRBLinExpr expr_T_plink = new GRBLinExpr();
+                expr_T_plink.addTerm(1.0, t_plink_kernel);
+                expr_T_plink.addTerm(1.0, t_plink_read);
+                expr_T_plink.addTerm(1.0, t_plink_write);
+
+                upperPlinkTime += upperRxTime;
+                T_plink = Optional.of(real_T_plink);
+            }
+
+
+            // We have the time that PLINK requires for execution, now we need to formulate the time spent in each core
+            // Note that T_plink in a way represents the time that the accelerator requires for both execution and data
+            // transfer
+
+            // The time spent in each core is the sum of the times of individual actors placed on that core
+
+            // The set below is the set of all partitions except the accelerator one
+            Set<String> PminusAccel = P.stream()
+                    .filter(p -> p.equals(accelPartition))
+                    .collect(Collectors.toSet());
+            List<GRBVar> T_list = new ArrayList<>();
+
+            Long upperNetworkTicks = I.stream().map(i -> this.multicoreDB.getInstanceTicks(i))
+                    .reduce((i, j) -> i + j).get();
+            for (String p : PminusAccel) {
+                Double upperCoreTime = upperNetworkTicks.doubleValue();
+                GRBLinExpr sumExpr = new GRBLinExpr();
+                for (Instance i : I) {
+
+                    Double t_i_exec = this.multicoreDB.getInstanceTicks(i).doubleValue() * this.multicoreClockPeriod;
+                    GRBVar b_i_p = instanceVariables.get(i).get(p);
+                    sumExpr.addTerm(t_i_exec, b_i_p);
+
+                }
+                // Add the T_plink time to the core assigned to plink
+                if (p.equals(plinkPartition) && T_plink.isPresent()) {
+
+                    sumExpr.addTerm(1.0, T_plink.get());
+                    upperCoreTime += upperPlinkTime;
+                }
+
+                GRBVar T_p = model.addVar(0.0, upperCoreTime, 0.0, GRB.CONTINUOUS, String.format("T_%s", p));
+                model.addConstr(T_p, GRB.EQUAL, sumExpr, String.format("T_%s=...", p));
+                T_list.add(T_p);
+            }
+
+
+            // The total execution time of the network is given by:
+
+            Double upperNetworkTime = upperNetworkTicks.doubleValue()* this.multicoreClockPeriod + upperPlinkTime;
+            GRBVar T_network = model.addVar(0.0, upperNetworkTicks, 0.0, GRB.CONTINUOUS, "T_network");
+            GRBVar[] T_array = T_list.toArray(new GRBVar[T_list.size()]);
+            model.addGenConstrMax(T_network, T_array, 0.0 ,"T_network = max(...)");
+
+            // All it remains is the communication times
+
+
+
+            /**
+             * To simplify the formulas (without loss of generality) we assume that the
+             */
+            // --Define the partition variable \forall i \in I, \forall p \in
 
             int numPartitions =
                     context.getConfiguration().isDefined(PartitionSettings.cpuCoreCount) ?
@@ -277,13 +556,23 @@ public class PartitioningAnalysisPhase implements Phase {
                         for (int targetPart = 0; targetPart < numPartitions; targetPart++) {
                             GRBVar sourcePartVar = sourceVars.get(sourcePart);
                             GRBVar targetPartVar = targetVars.get(targetPart);
-                            Double intraTicks =
-                                    this.multicoreDB.getCommunicationTicks(connection,
-                                            MulticoreProfileDataBase.CommunicationTicks.Kind.LocalCore);
-
-                            Double interTicks =
-                                    this.multicoreDB.getCommunicationTicks(connection,
-                                            MulticoreProfileDataBase.CommunicationTicks.Kind.Core2Core);
+                            Double intraTicks = Double.valueOf(0);
+                            Double interTicks = Double.valueOf(0);
+                            try {
+                                intraTicks =
+                                        this.multicoreDB.getCommunicationTicks(connection,
+                                                CommonProfileDataBase.CommunicationTicks.Kind.Local);
+                                interTicks =
+                                        this.multicoreDB.getCommunicationTicks(connection,
+                                                CommonProfileDataBase.CommunicationTicks.Kind.External);
+                            } catch (CompilationException e) {
+                                intraTicks = this.multicoreDB.getCommunicationTicks(connection,
+                                        this.multicoreDB.getMinimumProfiledBufferSize(),
+                                        CommonProfileDataBase.CommunicationTicks.Kind.Local);
+                                interTicks = this.multicoreDB.getCommunicationTicks(connection,
+                                        this.multicoreDB.getMinimumProfiledBufferSize(),
+                                        CommonProfileDataBase.CommunicationTicks.Kind.External);
+                            }
 
                             Double commTime = Double.valueOf(0);
                             if (sourcePart == targetPart)

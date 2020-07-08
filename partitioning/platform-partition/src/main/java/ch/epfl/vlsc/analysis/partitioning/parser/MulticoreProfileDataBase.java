@@ -5,27 +5,22 @@ import se.lth.cs.tycho.reporting.Diagnostic;
 import se.lth.cs.tycho.ir.network.Connection;
 import se.lth.cs.tycho.ir.network.Instance;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-public class MulticoreProfileDataBase {
+public class MulticoreProfileDataBase extends CommonProfileDataBase{
 
-    private ExecutionProfileDataBase execDb;
+
 
     private TokenExchangeProfileDataBase tokenDb;
 
-    private CommunicationProfileDataBase bwDb;
+
 
     private ConnectionSettingsDataBase auxDb;
 
-    static public class ExecutionProfileDataBase extends ProfileDataBase<Instance, Long>{
 
-        @Override
-        String getObjectName(Instance instance) {
-            return instance.getInstanceName();
-        }
-    }
     static public class TokenExchangeProfileDataBase extends ProfileDataBase<Connection, Long> {
         @Override
         String getObjectName(Connection connection) {
@@ -34,69 +29,7 @@ public class MulticoreProfileDataBase {
                     connection.getTarget().getInstance().orElse(""), connection.getTarget().getPort());
         }
     }
-    static public class CommunicationTicks{
-        public enum Kind {
-            LocalCore,
-            Core2Core;
-        };
-        public CommunicationTicks(Long intra, Long inter) {
-            this.inter = inter;
-            this.intra = intra;
-        }
-        static public Builder builder() {
-            return new Builder();
-        }
-        private Long intra;
-        private Long inter;
-        public Long get(Kind kind) {
-            switch (kind) {
-                case LocalCore: return this.intra;
-                case Core2Core: return this.inter;
-                default: throw new CompilationException(
-                        new Diagnostic(Diagnostic.Kind.ERROR, "invalid bandwidth kind " + kind.toString()));
-            }
-        }
 
-        static public class Builder {
-            Optional<Long> inter;
-            Optional<Long> intra;
-            public Builder() {
-                this.inter = Optional.empty();
-                this.intra = Optional.empty();
-            }
-            public void set(Long value, Kind kind) {
-                switch (kind) {
-                    case LocalCore:
-                        if (this.intra.isPresent())
-                            throw new CompilationException(
-                                    new Diagnostic(Diagnostic.Kind.ERROR,
-                                            "LocalCore value already set in the builder"));
-                        else
-                            this.intra = Optional.of(value);
-                        break;
-                    case Core2Core:
-                        if (this.inter.isPresent())
-                            throw new CompilationException(
-                                    new Diagnostic(Diagnostic.Kind.ERROR,
-                                            "Core2Core value already set in the builder"));
-                        else
-                            this.inter = Optional.of(value);
-                        break;
-                    default: throw new CompilationException(
-                            new Diagnostic(Diagnostic.Kind.ERROR, "invalid bandwidth kind " + kind.toString()));
-                }
-            }
-            public CommunicationTicks build() {
-                if (this.inter.isPresent() && this.intra.isPresent()) {
-                    return new CommunicationTicks(this.intra.get(), this.inter.get());
-                } else {
-                    throw new CompilationException(
-                            new Diagnostic(Diagnostic.Kind.ERROR, "trying to build an " +
-                                    "incomplete CommunicationBandwidth"));
-                }
-            }
-        }
-    }
 
     static public class ConnectionSettings {
         private Integer depth;
@@ -114,13 +47,6 @@ public class MulticoreProfileDataBase {
             return width;
         }
     }
-    static public class CommunicationProfileDataBase extends ProfileDataBase<Integer, CommunicationTicks>{
-
-        @Override
-        String getObjectName(Integer bufferSize) {
-            return String.format("buffer size %d", bufferSize);
-        }
-    }
 
     static public class ConnectionSettingsDataBase extends  ProfileDataBase<Connection, ConnectionSettings> {
         @Override
@@ -132,19 +58,14 @@ public class MulticoreProfileDataBase {
     }
 
     public MulticoreProfileDataBase() {
-        this.execDb = new ExecutionProfileDataBase();
-        this.bwDb = new CommunicationProfileDataBase();
+        this.execDb = new CommonProfileDataBase.ExecutionProfileDataBase();
+        this.bwDb = new CommonProfileDataBase.CommunicationProfileDataBase();
         this.tokenDb = new TokenExchangeProfileDataBase();
         this.auxDb = new ConnectionSettingsDataBase();
 
     }
 
-    public void setInstanceTicks(Instance instance, Long ticks) {
-        execDb.set(instance, ticks);
-    }
-    public void setCommunicationTicks(Integer bufferSize, CommunicationTicks bw) {
-        bwDb.set(bufferSize, bw);
-    }
+
     public void setTokensExchanged(Connection connection, Long tokens) {
         this.tokenDb.set(connection, tokens);
     }
@@ -164,7 +85,7 @@ public class MulticoreProfileDataBase {
      * @param kind the kind of the connection, LocalCore or Core2Core
      * @return Double value that estimates the communication ticks (not time) of the given connection
      */
-    public Double getCommunicationTicks(Connection connection, CommunicationTicks.Kind kind) {
+    public Double getCommunicationTicks(Connection connection, CommonProfileDataBase.CommunicationTicks.Kind kind) {
         Integer connectionBufferSizeBytes = this.getSettings(connection).getDepth() *
                 this.getSettings(connection).getWidth();
         Integer nextProfiledBufferSizeBytes =
@@ -173,15 +94,38 @@ public class MulticoreProfileDataBase {
                     Integer.highestOneBit(connectionBufferSizeBytes) << 1;
         // Number of ticks it takes to transfer nextProfiledBufferSizeBytes bytes over either
         // core to core or local core fifos
-        CommunicationTicks ticksPerTx = this.bwDb.get(nextProfiledBufferSizeBytes);
-        Long tokensExchanged = this.getTokensExchanged(connection);
-        Double numTx = tokensExchanged.doubleValue() / nextProfiledBufferSizeBytes.doubleValue();
-        return numTx * ticksPerTx.get(kind);
+        if (nextProfiledBufferSizeBytes < getMinimumProfiledBufferSize()) {
+            nextProfiledBufferSizeBytes = getMinimumProfiledBufferSize();
+        }
+        try {
+            CommonProfileDataBase.CommunicationTicks ticksPerTx = getCommunicationTicks(nextProfiledBufferSizeBytes);
+            Long tokensExchanged = this.getTokensExchanged(connection);
+            Double numTx = tokensExchanged.doubleValue() / nextProfiledBufferSizeBytes.doubleValue();
+            return numTx * ticksPerTx.get(kind);
 
+        } catch (CompilationException e) {
+
+            throw new CompilationException(
+                    new Diagnostic(Diagnostic.Kind.ERROR,
+                            String.format("Could not find communication ticks for connection " +
+                                    "%s.%s-->%s.%s with depth %d and width %d, closest power of 2 buffer size is %s\n" +
+                                            "Try running the multicore bandwidth profiler for a wider range of buffer sizes",
+                                    connection.getSource().getInstance().orElse(""),
+                                    connection.getSource().getPort(),
+                                    connection.getTarget().getInstance().orElse(""),
+                                    connection.getTarget().getPort(),
+                                    this.getSettings(connection).getDepth(),
+                                    this.getSettings(connection).getWidth(),
+                                    nextProfiledBufferSizeBytes)));
+        }
     }
 
-    public CommunicationTicks getCommunicationTicks(Integer bufferSize) {
-        return bwDb.get(bufferSize);
+    public Double getCommunicationTicks(Connection connection, Integer bufferSize,
+                                        CommonProfileDataBase.CommunicationTicks.Kind kind) {
+        CommonProfileDataBase.CommunicationTicks ticksPerTx = getCommunicationTicks(bufferSize);
+        Long tokensExchanged = this.getTokensExchanged(connection);
+        Double numTx = tokensExchanged.doubleValue() / bufferSize.doubleValue();
+        return numTx * ticksPerTx.get(kind);
     }
 
     public Long getTokensExchanged(Connection connection) {
@@ -199,15 +143,11 @@ public class MulticoreProfileDataBase {
         return tokenDb;
     }
 
-    public ExecutionProfileDataBase getExecutionProfileDataBase() {
-        return execDb;
-    }
-
-    public CommunicationProfileDataBase getCommunicationProfileDataBase() {
-        return bwDb;
-    }
-
     public ConnectionSettingsDataBase getConnectionSettingsDataBase() {
         return auxDb;
+    }
+
+    public Integer getMinimumProfiledBufferSize() {
+        return Collections.min(this.bwDb.keySet());
     }
 }

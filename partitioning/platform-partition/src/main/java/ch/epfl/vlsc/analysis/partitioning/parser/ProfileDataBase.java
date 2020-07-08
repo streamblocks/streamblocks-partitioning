@@ -16,7 +16,7 @@ public abstract class ProfileDataBase<Obj, T> {
     public ProfileDataBase() {
         this.db = new HashMap<>();
     }
-    public void set(Obj object, T value) {
+    public void set(Obj object, T value) throws CompilationException{
         if (this.db.containsKey(object)) {
             throw new CompilationException(
                     new Diagnostic(Diagnostic.Kind.ERROR,
@@ -25,7 +25,7 @@ public abstract class ProfileDataBase<Obj, T> {
             this.db.put(object, value);
         }
     }
-    public T get(Obj object) {
+    public T get(Obj object) throws CompilationException {
         if (this.db.containsKey(object)) {
             return this.db.get(object);
         } else {

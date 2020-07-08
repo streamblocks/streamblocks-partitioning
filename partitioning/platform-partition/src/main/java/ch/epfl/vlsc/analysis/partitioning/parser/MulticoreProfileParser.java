@@ -136,17 +136,17 @@ public class MulticoreProfileParser {
             doc.getDocumentElement().normalize();
 
             NodeList bwList = doc.getElementsByTagName("bandwidth-test");
-            Map<Integer, MulticoreProfileDataBase.CommunicationTicks.Builder> data = new HashMap<>();
+            Map<Integer, CommonProfileDataBase.CommunicationTicks.Builder> data = new HashMap<>();
 
             for(int ix = 0; ix < bwList.getLength(); ix++) {
 
                 Node bwNode = bwList.item(ix);
                 if (bwNode.getNodeType() == Node.ELEMENT_NODE) {
                     Element bwElem = (Element) bwNode;
-                    MulticoreProfileDataBase.CommunicationTicks.Kind kind =
+                    CommonProfileDataBase.CommunicationTicks.Kind kind =
                             bwElem.getAttribute("type").equals("single") ?
-                                    MulticoreProfileDataBase.CommunicationTicks.Kind.LocalCore :
-                                    MulticoreProfileDataBase.CommunicationTicks.Kind.Core2Core;
+                                    CommonProfileDataBase.CommunicationTicks.Kind.Local :
+                                    CommonProfileDataBase.CommunicationTicks.Kind.External;
 
                     NodeList conList = bwElem.getElementsByTagName("Connection");
 
@@ -163,8 +163,8 @@ public class MulticoreProfileParser {
 
                                 data.get(bufferSize).set(ticks, kind);
                             } else {
-                                MulticoreProfileDataBase.CommunicationTicks.Builder bwBuilder =
-                                        MulticoreProfileDataBase.CommunicationTicks.builder();
+                                CommonProfileDataBase.CommunicationTicks.Builder bwBuilder =
+                                        CommonProfileDataBase.CommunicationTicks.builder();
                                 bwBuilder.set(ticks, kind);
                                 data.put(bufferSize, bwBuilder);
                             }
@@ -186,8 +186,8 @@ public class MulticoreProfileParser {
             context.getReporter().report(
                     new Diagnostic(Diagnostic.Kind.INFO, String.format("buffer size = %d -> inter: %d, intra: %d",
                             bufferSize,
-                            bw.get(MulticoreProfileDataBase.CommunicationTicks.Kind.Core2Core),
-                            bw.get(MulticoreProfileDataBase.CommunicationTicks.Kind.LocalCore))));
+                            bw.get(CommonProfileDataBase.CommunicationTicks.Kind.External),
+                            bw.get(CommonProfileDataBase.CommunicationTicks.Kind.Local))));
 
         });
 
