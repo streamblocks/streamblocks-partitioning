@@ -75,6 +75,16 @@ public class MulticoreProfileDataBase extends CommonProfileDataBase{
     }
 
     /**
+     * Computes the size of burst transfers in a connection in bytes
+     * @param connection
+     * @return
+     */
+    public Integer getConnectionBytes(Connection connection) {
+        return this.getSettings(connection).getDepth() *
+                this.getSettings(connection).getWidth();
+    }
+
+    /**
      * Computes the communication ticks for a given connection and its kind. Since we have a
      * database of communication ticks for limited number of buffer sizes (32, 64, ... bytes)
      * then if the connection has a custom size e.g. 3421 tokens capacity, we have to find
@@ -86,8 +96,7 @@ public class MulticoreProfileDataBase extends CommonProfileDataBase{
      * @return Double value that estimates the communication ticks (not time) of the given connection
      */
     public Double getCommunicationTicks(Connection connection, CommonProfileDataBase.CommunicationTicks.Kind kind) {
-        Integer connectionBufferSizeBytes = this.getSettings(connection).getDepth() *
-                this.getSettings(connection).getWidth();
+        Integer connectionBufferSizeBytes = getConnectionBytes(connection);
         Integer nextProfiledBufferSizeBytes =
                 (Integer.highestOneBit(connectionBufferSizeBytes) == connectionBufferSizeBytes) ?
                     connectionBufferSizeBytes :

@@ -7,7 +7,6 @@ import org.w3c.dom.NodeList;
 import se.lth.cs.tycho.compiler.CompilationTask;
 import se.lth.cs.tycho.compiler.Context;
 import se.lth.cs.tycho.ir.network.Network;
-import se.lth.cs.tycho.ir.util.ImmutableList;
 import se.lth.cs.tycho.reporting.CompilationException;
 import se.lth.cs.tycho.reporting.Diagnostic;
 
@@ -146,7 +145,7 @@ public class MulticoreProfileParser {
                     CommonProfileDataBase.CommunicationTicks.Kind kind =
                             bwElem.getAttribute("type").equals("single") ?
                                     CommonProfileDataBase.CommunicationTicks.Kind.Local :
-                                    CommonProfileDataBase.CommunicationTicks.Kind.External;
+                                    CommonProfileDataBase.CommunicationTicks.Kind.Global;
 
                     NodeList conList = bwElem.getElementsByTagName("Connection");
 
@@ -186,7 +185,7 @@ public class MulticoreProfileParser {
             context.getReporter().report(
                     new Diagnostic(Diagnostic.Kind.INFO, String.format("buffer size = %d -> inter: %d, intra: %d",
                             bufferSize,
-                            bw.get(CommonProfileDataBase.CommunicationTicks.Kind.External),
+                            bw.get(CommonProfileDataBase.CommunicationTicks.Kind.Global),
                             bw.get(CommonProfileDataBase.CommunicationTicks.Kind.Local))));
 
         });

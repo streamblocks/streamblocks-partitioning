@@ -31,9 +31,13 @@ public abstract class ProfileDataBase<Obj, T> {
         } else {
             throw new CompilationException(
                     new Diagnostic(Diagnostic.Kind.ERROR,
-                            "Null get in " + getObjectName(object)));
+                            "Null get for " + getObjectName(object)));
         }
 
+    }
+
+    public boolean contains(Obj object) {
+        return this.db.containsKey(object);
     }
     public Collection<T> values() {
         return this.db.values();

@@ -16,7 +16,7 @@ public class CommonProfileDataBase {
     static public class CommunicationTicks{
         public enum Kind {
             Local,
-            External;
+            Global;
         };
         public CommunicationTicks(Long intra, Long inter) {
             this.inter = inter;
@@ -30,7 +30,7 @@ public class CommonProfileDataBase {
         public Long get(Kind kind) {
             switch (kind) {
                 case Local: return this.intra;
-                case External: return this.inter;
+                case Global: return this.inter;
                 default: throw new CompilationException(
                         new Diagnostic(Diagnostic.Kind.ERROR, "invalid bandwidth kind " + kind.toString()));
             }
@@ -53,7 +53,7 @@ public class CommonProfileDataBase {
                         else
                             this.intra = Optional.of(value);
                         break;
-                    case External:
+                    case Global:
                         if (this.inter.isPresent())
                             throw new CompilationException(
                                     new Diagnostic(Diagnostic.Kind.ERROR,
