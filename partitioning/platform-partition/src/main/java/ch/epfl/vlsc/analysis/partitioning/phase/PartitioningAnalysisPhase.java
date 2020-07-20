@@ -50,15 +50,22 @@ public class PartitioningAnalysisPhase implements Phase {
     boolean definedOclProfilePath;
     boolean definedCoreCommProfilePath;
 
+    private final String plinkPartition;
+    private final String accelPartition;
+    GRBModel model;
     public PartitioningAnalysisPhase() {
         this.multicoreDB = null;
-        this.multicoreClockPeriod = 0.33; // about 3 GHz
+        this.multicoreClockPeriod = 1.0 / 3.4; // about 3 GHz
         this.accelDB = null;
-        this.accelClockPeriod = 3.3; // about 300 MHz
+        this.accelClockPeriod = 1.0 / .3; // about 300 MHz
         this.definedCoreCommProfilePath = false;
         this.definedOclProfilePath = false;
         this.definedSystemCProfilePath = false;
         this.definedMulticoreProfilePath = false;
+
+
+        this.plinkPartition = "core_0";
+        this.accelPartition = "accel";
 
     }
     @Override
@@ -148,22 +155,37 @@ public class PartitioningAnalysisPhase implements Phase {
         this.multicoreDB = multicoreParser.getDataBase();
         this.accelDB = devParser.getDataBase();
         Long startTime = System.currentTimeMillis();
-//        Map<Integer, List<Instance>> partitions = findPartitions(task, context);
-        Map<String, List<Instance>> partitions = findHeterogeneousPartitions(task, context);
-        Long elapsedTime = System.currentTimeMillis() - startTime;
 
-        partitions.forEach((p, i) -> {
-            System.out.printf("%s:\n", p);
-            reportInstances(i);
-        });
-         createConfig(partitions, context);
-        System.out.printf("Found solution int %d ms.\n", elapsedTime);
+        ImmutableList<Map<String, List<Instance>>> solutions = solveModel(task, context);
+        Long elapsedTime = System.currentTimeMillis() - startTime;
+        System.out.printf("Found solution in %d ms.\n", elapsedTime);
+        int id = 0;
+        for(Map<String, List<Instance>> partitions: solutions) {
+
+
+            try {
+                model.set(GRB.IntParam.SolutionNumber, id);
+                Double estimated_time = model.getVarByName("T").get(GRB.DoubleAttr.Xn) * 1e-6;
+                System.out.printf("Solution %d (%f ms)\n", id, estimated_time);
+                reportPartition(partitions);
+                createConfig(partitions, context, id);
+                id++;
+            } catch (GRBException e) {
+                e.printStackTrace();
+            }
+
+
+        }
         return task;
     }
 
-    private void reportInstances(List<Instance> instances) {
-        for (Instance instance: instances) {
-            System.out.printf("\t%s\n", instance.getInstanceName());
+    private void reportPartition(Map<String, List<Instance>> partitions) {
+        for (String p: partitions.keySet()) {
+            System.out.printf("\t%s: ", p);
+            for (Instance instance: partitions.get(p)) {
+                System.out.printf("\t%s", instance.getInstanceName());
+            }
+            System.out.printf("\n");
         }
     }
 
@@ -175,12 +197,12 @@ public class PartitioningAnalysisPhase implements Phase {
     private String getMulticorePartitionId(String partition) {
         return partition.substring(5);
     }
-    private void createConfig(Map<String, List<Instance>> partitions, Context context) {
+    private void createConfig(Map<String, List<Instance>> partitions, Context context, int pid) {
 
         Path configPath =
             context.getConfiguration().isDefined(PartitionSettings.configPath) ?
                 context.getConfiguration().get(PartitionSettings.configPath) :
-                    context.getConfiguration().get(Compiler.targetPath).resolve("bin/config.xml");
+                    context.getConfiguration().get(Compiler.targetPath).resolve("bin/config_" + pid + ".xml");
 
         try {
             // the config xml doc
@@ -237,10 +259,10 @@ public class PartitioningAnalysisPhase implements Phase {
         }
 
     }
-    private Map<Integer, List<Instance>> findPartitions(CompilationTask task, Context context) {
 
+    private ImmutableList<Map<String, List<Instance>>> solveModel(CompilationTask task, Context context) {
         Network network = task.getNetwork();
-        Map<Integer, List<Instance>> partitions = new HashMap<>();
+
         try {
 
             GRBEnv env = new GRBEnv(true);
@@ -255,205 +277,7 @@ public class PartitioningAnalysisPhase implements Phase {
 
             env.start();
 
-            GRBModel model = new GRBModel(env);
-
-            // create the objective expression
-            GRBLinExpr objectiveExpr = new GRBLinExpr();
-
-            /**
-             * To simplify the formulas (without loss of generality) we assume that the
-             */
-            // --Define the partition variable \forall i \in I, \forall p \in
-
-            int numPartitions =
-                    context.getConfiguration().isDefined(PartitionSettings.cpuCoreCount) ?
-                            context.getConfiguration().get(PartitionSettings.cpuCoreCount) :
-                            PartitionSettings.cpuCoreCount.defaultValue(context.getConfiguration());
-            Map<Instance, List<GRBVar>> partitionVars = new HashMap<>();
-
-            // Partition variables
-            for (Instance instance : network.getInstances()) {
-                GRBLinExpr constraintExpr = new GRBLinExpr();
-                List<GRBVar> vars = new ArrayList<>();
-                for (int part = 0; part < numPartitions; part++) {
-                    GRBVar partitionSelector =
-                            model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
-                                    String.format("p_%d_%s", part, instance.getInstanceName()));
-                    vars.add(partitionSelector);
-                    constraintExpr.addTerm(1.0, partitionSelector);
-                }
-                partitionVars.put(instance, vars);
-                // unique partition constraint
-                model.addConstr(constraintExpr, GRB.EQUAL,
-                        1.0, String.format("unique partition %s", instance.getInstanceName()));
-            }
-
-            GRBVar[] execTicks = new GRBVar[numPartitions];
-            // Partition execution tick
-            for (int part = 0; part < numPartitions; part++) {
-                GRBVar partitionTicks =
-                        model.addVar(0.0, ticksUpperBound(), 0.0, GRB.CONTINUOUS, "ticks_" + part);
-                execTicks[part] = partitionTicks;
-                GRBLinExpr ticksExpr = new GRBLinExpr();
-                for (Instance instance : network.getInstances()) {
-                    GRBVar partitionSelector = partitionVars.get(instance).get(part);
-                    Double instanceTicks = this.multicoreDB.getInstanceTicks(instance).doubleValue() *
-                            this.multicoreClockPeriod;
-
-                    ticksExpr.addTerm(instanceTicks, partitionSelector);
-                }
-                // partition ticks is the sum of ticks
-                model.addConstr(partitionTicks, GRB.EQUAL, ticksExpr,
-                        String.format("ticks constraint %d", part));
-            }
-            GRBVar totalExecTicks = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS, "total_execution_ticks");
-
-            // Total ticks is the max of parallel ticks
-            model.addGenConstrMax(totalExecTicks, execTicks, 0.0, "parallel tasks time constraint");
-
-            objectiveExpr.addTerm(1.0, totalExecTicks);
-
-
-
-            Map<Connection, GRBVar> commTicks = new HashMap<>();
-
-            if (definedCoreCommProfilePath) {
-                // communication cost
-                for (Connection connection : network.getConnections()) {
-                    Connection.End sourceEnd = connection.getSource();
-
-                    Connection.End targetEnd = connection.getTarget();
-
-                    Instance sourceInstance = findSourceInstance(sourceEnd, network);
-                    Instance targetInstance = findTargetInstance(targetEnd, network);
-
-                    List<GRBVar> sourceVars = partitionVars.get(sourceInstance);
-                    List<GRBVar> targetVars = partitionVars.get(targetInstance);
-                    GRBQuadExpr sumOfProducts = new GRBQuadExpr();
-                    for (int sourcePart = 0; sourcePart < numPartitions; sourcePart++) {
-
-                        for (int targetPart = 0; targetPart < numPartitions; targetPart++) {
-                            GRBVar sourcePartVar = sourceVars.get(sourcePart);
-                            GRBVar targetPartVar = targetVars.get(targetPart);
-                            Double intraTicks = Double.valueOf(0);
-                            Double interTicks = Double.valueOf(0);
-                            try {
-                                intraTicks =
-                                        this.multicoreDB.getCommunicationTicks(connection,
-                                                CommonProfileDataBase.CommunicationTicks.Kind.Local);
-                                interTicks =
-                                        this.multicoreDB.getCommunicationTicks(connection,
-                                                CommonProfileDataBase.CommunicationTicks.Kind.Global);
-                            } catch (CompilationException e) {
-                                intraTicks = this.multicoreDB.getCommunicationTicks(connection,
-                                        this.multicoreDB.getMinimumProfiledBufferSize(),
-                                        CommonProfileDataBase.CommunicationTicks.Kind.Local);
-                                interTicks = this.multicoreDB.getCommunicationTicks(connection,
-                                        this.multicoreDB.getMinimumProfiledBufferSize(),
-                                        CommonProfileDataBase.CommunicationTicks.Kind.Global);
-                            }
-
-                            Double commTime = Double.valueOf(0);
-                            if (sourcePart == targetPart)
-                                commTime = intraTicks;
-                            else
-                                commTime = interTicks;
-                            commTime = commTime * this.multicoreClockPeriod;
-                            sumOfProducts.addTerm(commTime, sourcePartVar, targetPartVar);
-
-                        }
-                    }
-                    String connectionName = String.format("%s.%s->%s.%s",
-                            sourceEnd.getInstance().get(), sourceEnd.getPort(),
-                            targetEnd.getInstance().get(), targetEnd.getPort());
-                    GRBVar connectionTicks = model.addVar(
-                            0.0,
-                            GRB.INFINITY,
-                            0.0,
-                            GRB.CONTINUOUS,
-                            connectionName + "_ticks");
-                    commTicks.put(connection, connectionTicks);
-                    model.addQConstr(connectionTicks, GRB.EQUAL, sumOfProducts, "constraint " + connectionName);
-                }
-
-                GRBVar totalCommTicks = model.addVar(
-                        0.0,
-                        GRB.INFINITY,
-                        0.0,
-                        GRB.CONTINUOUS,
-                        "total communication ticks");
-                GRBLinExpr sumCommTicks = new GRBLinExpr();
-                commTicks.values().forEach(v -> sumCommTicks.addTerm(1.0, v));
-                model.addConstr(totalCommTicks, GRB.EQUAL, sumCommTicks, "sum of communication ticks");
-                objectiveExpr.addTerm(1.0, totalCommTicks);
-            }
-
-
-            model.setObjective(objectiveExpr, GRB.MINIMIZE);
-
-            Path modelFile = logPath.resolve("model.lp");
-            context.getReporter().report(
-                    new Diagnostic(Diagnostic.Kind.INFO, "Writing model into " + modelFile.toString()));
-            model.write(modelFile.toString());
-
-
-            model.presolve();
-            // Find a solution
-            model.optimize();
-
-            context.getReporter().report(
-                    new Diagnostic(
-                            Diagnostic.Kind.INFO, String.format("Partitions 0 to %d: ", numPartitions - 1)));
-
-            for (Instance instance: network.getInstances()) {
-                int maxIndex = 0;
-                double maxVal = 0;
-                for (GRBVar part: partitionVars.get(instance)) {
-                    if (part.get(GRB.DoubleAttr.X) > maxVal) {
-                        maxVal = part.get(GRB.DoubleAttr.X);
-                        maxIndex = partitionVars.get(instance).indexOf(part);
-                    }
-                }
-                if (partitions.containsKey(maxIndex)) {
-                    partitions.get(maxIndex).add(instance);
-                } else {
-                    List<Instance> ls = new ArrayList<Instance>();
-                    ls.add(instance);
-                    partitions.put(maxIndex, ls);
-                }
-                context.getReporter().report(
-                        new Diagnostic(Diagnostic.Kind.INFO,
-                                String.format("Instance %s -> partition %d", instance.getInstanceName(), maxIndex)));
-            }
-
-            model.dispose();
-            env.dispose();
-
-        } catch (GRBException e) {
-            System.out.println("Error code: " + e.getErrorCode() + ". " +
-                    e.getMessage());
-        }
-        return partitions;
-    }
-
-    private Map<String, List<Instance>> findHeterogeneousPartitions(CompilationTask task, Context context) {
-        Network network = task.getNetwork();
-        Map<String, List<Instance>> partitions = new HashMap<>();
-        try {
-
-            GRBEnv env = new GRBEnv(true);
-            Path logPath = context.getConfiguration().get(Compiler.targetPath);
-            Path logfile = logPath.resolve("partitions.log");
-
-            context.getReporter().report(
-                    new Diagnostic(Diagnostic.Kind.INFO, "Logging into " + logfile.toString()));
-
-            env.set("LogFile", logfile.toString());
-
-
-            env.start();
-
-            GRBModel model = new GRBModel(env);
+            model = new GRBModel(env);
 
             // create the objective expression
             GRBLinExpr objectiveExpr = new GRBLinExpr();
@@ -478,8 +302,7 @@ public class PartitioningAnalysisPhase implements Phase {
              * The set of all partitions is P = {c_m : 1 \leq m \leq numberOfCores} \cup {accel}
              */
 
-            String accelPartition = "accel";
-            String plinkPartition = "core_0";
+
 
             P.add(plinkPartition);
             for (int p = 1; p < numberOfCores; p++)
@@ -510,7 +333,7 @@ public class PartitioningAnalysisPhase implements Phase {
                 model.addConstr(constraintExpr, GRB.EQUAL, 1.0,
                         String.format("%s_unique_partition", i.getInstanceName()));
                 // Make some instances software only
-                if (!this.accelDB.getExecutionProfileDataBase().contains(i)) {
+                if (this.definedSystemCProfilePath && !this.accelDB.getExecutionProfileDataBase().contains(i)) {
                     GRBVar b_i_accel = instanceVariables.get(i).get(accelPartition);
                     model.addConstr(b_i_accel, GRB.EQUAL, 0.0,
                             String.format("%s_software_only", i.getInstanceName()));
@@ -539,7 +362,7 @@ public class PartitioningAnalysisPhase implements Phase {
 
                     GRBVar b_i_accel_t_i_exec_product =  model.addVar(0.0,
                             t_i_exec_accel, 0.0, GRB.CONTINUOUS,
-                            String.format("b^%s_{accel}xt^%1$s_{exec}(accel)", i.getInstanceName()));
+                            String.format("t^%s_{exec}(accel)", i.getInstanceName()));
                     GRBLinExpr expr = new GRBLinExpr();
 
                     // The time of each instance on the FPGA =  ticks * clockPeriod
@@ -547,7 +370,7 @@ public class PartitioningAnalysisPhase implements Phase {
                     GRBVar b_i_accel = instanceVariables.get(i).get(accelPartition);
                     expr.addTerm(t_i_exec_accel, b_i_accel);
                     model.addConstr(expr, GRB.EQUAL, b_i_accel_t_i_exec_product,
-                            String.format("b_%s_{accel}_t_%1$s_{exec}=b^%1$s_{accel}xt^%1$s_{exec}(accel)",
+                            String.format("t^%s_{exec}(accel)=...",
                                     i.getInstanceName()));
                     termsList.add(b_i_accel_t_i_exec_product);
                 }
@@ -589,16 +412,16 @@ public class PartitioningAnalysisPhase implements Phase {
                     expr_b_l_accel_neg.addConstant(1.0);
                     expr_b_l_accel_neg.addTerm(-1.0, b_l_accel);
 
-                    model.addConstr(b_l_accel_neg, GRB.EQUAL, expr_b_l_accel_neg, String.format("(1-b_%s_accel)",
+                    model.addConstr(b_l_accel_neg, GRB.EQUAL, expr_b_l_accel_neg, String.format("~b_%s_(accel)",
                             l.getInstanceName()));
 
                     GRBVar b_l_accel_neg_and_b_k_accel = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
-                            String.format("(1-b_%s_accel)b_%s_accel", l.getInstanceName(), k.getInstanceName()));
+                            String.format("b^{~%s,%s}_{accel}", l.getInstanceName(), k.getInstanceName()));
                     GRBVar[] argsAnd = new GRBVar[2];
                     argsAnd[0] = b_l_accel_neg;
                     argsAnd[1] = b_k_accel;
                     model.addGenConstrAnd(b_l_accel_neg_and_b_k_accel, argsAnd,
-                            String.format("constraint:(1-b_%s_accel)b_%s_accel",
+                            String.format("b^{~%s,%s}_{accel}=(1-b_%1$s_accel)b_%2$s_accel",
                                     l.getInstanceName(), k.getInstanceName()));
                     Long bufferSize = Long.valueOf(this.multicoreDB.getConnectionBytes(c));
                     Long tokens = this.multicoreDB.getTokensExchanged(c);
@@ -639,16 +462,16 @@ public class PartitioningAnalysisPhase implements Phase {
                     expr_b_k_accel_neg.addTerm(-1.0, b_k_accel);
 
                     model.addConstr(b_k_accel_neg, GRB.EQUAL, expr_b_k_accel_neg,
-                            String.format("(1-b_%s_accle)", k.getInstanceName()));
+                            String.format("~b_{%s}_{accel}=(1-b_%1$s_accl)", k.getInstanceName()));
 
                     GRBVar b_k_accel_neg_and_b_l_accel = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
-                            String.format("(1-b_%s_accel)b_%s_accel", k.getInstanceName(), l.getInstanceName()));
+                            String.format("b^{%s,%s}_{accel}", k.getInstanceName(), l.getInstanceName()));
                     GRBVar[] argsAnd = new GRBVar[2];
                     argsAnd[0] = b_l_accel;
                     argsAnd[1] = b_k_accel_neg;
 
                     model.addGenConstrAnd(b_k_accel_neg_and_b_l_accel, argsAnd,
-                            String.format("constraint:(1-b_%s_accel)b_%s_accel",
+                            String.format("b^{%s,%s}_{accel}=(1-b_%1$s_accel)b_%1$s_accel",
                                     k.getInstanceName(), l.getInstanceName()));
                     Long bufferSize = Long.valueOf(this.multicoreDB.getConnectionBytes(c));
                     Long tokens = this.multicoreDB.getTokensExchanged(c);
@@ -670,7 +493,8 @@ public class PartitioningAnalysisPhase implements Phase {
                 expr_T_plink.addTerm(1.0, t_plink_kernel);
                 expr_T_plink.addTerm(1.0, t_plink_read);
                 expr_T_plink.addTerm(1.0, t_plink_write);
-
+                model.addConstr(real_T_plink, GRB.EQUAL, expr_T_plink,
+                        "T_plink=t_plink_kernel+t_plink_read+t_plink_write");
                 upperPlinkTime += upperRxTime;
                 T_plink = Optional.of(real_T_plink);
             }
@@ -777,13 +601,13 @@ public class PartitioningAnalysisPhase implements Phase {
                     Instance k = findTargetInstance(c.getTarget(), network);
 
                     GRBVar b_jk_accel = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
-                            String.format("b^{(%s, %s)}_accel", j.getInstanceName(), k.getInstanceName()));
+                            String.format("b^{(%s,%s)}_accel", j.getInstanceName(), k.getInstanceName()));
 
                     GRBVar[] argsAnd = new GRBVar[2];
                     argsAnd[0] = instanceVariables.get(j).get(accelPartition);
                     argsAnd[1] = instanceVariables.get(k).get(accelPartition);
                     model.addGenConstrAnd(b_jk_accel, argsAnd,
-                            String.format("b^{(%s, %s)}_accel=and(...)", j.getInstanceName(), k.getInstanceName()));
+                            String.format("b^{(%s,%s)}_accel=and(...)", j.getInstanceName(), k.getInstanceName()));
                     // Time spent in FIFOs is modelled as tokens * clock, since FIFOs have a bandwidth of
                     // one token per cycle.
                     Long tokens = this.multicoreDB.getTokensExchanged(c);
@@ -870,7 +694,7 @@ public class PartitioningAnalysisPhase implements Phase {
                 for (Connection c: C) {
 
                     Instance j = findSourceInstance(c.getSource(), network);
-                    Instance k = findSourceInstance(c.getTarget(), network);
+                    Instance k = findTargetInstance(c.getTarget(), network);
 
                     GRBVar b_j_plink = instanceVariables.get(j).get(plinkPartition);
                     GRBVar b_k_accel = instanceVariables.get(k).get(accelPartition);
@@ -880,7 +704,7 @@ public class PartitioningAnalysisPhase implements Phase {
 
 
                     GRBVar b_jk_plinkaccel = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
-                            String.format("b_(%s,%s)_(accel,plink)", j.getInstanceName(), k.getInstanceName()));
+                            String.format("b_(%s,%s)_(plink,accel)", j.getInstanceName(), k.getInstanceName()));
                     GRBVar b_jk_accelplink = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
                             String.format("b_(%s,%s)_(accel,plink)", j.getInstanceName(), k.getInstanceName()));
 
@@ -905,7 +729,7 @@ public class PartitioningAnalysisPhase implements Phase {
                             this.multicoreDB.getCommunicationTicks(c,
                                     CommonProfileDataBase.CommunicationTicks.Kind.Global) * this.multicoreClockPeriod;
 
-                    expr_T_ca.addTerm(localTime, b_jk_accelplink);
+                    expr_T_ca.addTerm(localTime, b_jk_plinkaccel);
                     expr_T_ca.addTerm(localTime, b_jk_accelplink);
 
 
@@ -965,7 +789,11 @@ public class PartitioningAnalysisPhase implements Phase {
             if (T_ca.isPresent())
                 objectiveExpr.addTerm(1.0, T_ca.get());
 
+            GRBVar T = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS, "T");
+            model.addConstr(T, GRB.EQUAL, objectiveExpr, "T=..");
+
             model.setObjective(objectiveExpr, GRB.MINIMIZE);
+
 
             Path modelFile = logPath.resolve("model.lp");
             context.getReporter().report(
@@ -974,9 +802,36 @@ public class PartitioningAnalysisPhase implements Phase {
 
 
             model.presolve();
-            // Find a solution
+            // Find all solutions
             model.optimize();
 
+            ImmutableList.Builder<Map<String, List<Instance>>> solBuilder = ImmutableList.builder();
+
+            int solutionCount = model.get(GRB.IntAttr.SolCount);
+
+            for (int solId = 0; solId < solutionCount; solId++) {
+
+                model.set(GRB.IntParam.SolutionNumber, solId);
+
+                solBuilder.add(makePartitionMap(instanceVariables, P, I));
+            }
+            return solBuilder.build();
+
+        } catch (GRBException e) {
+            throw new CompilationException(
+                    new Diagnostic(Diagnostic.Kind.ERROR,
+                            String.format("GRB exception caught with error %s. %s",
+                                    e.getErrorCode(), e.getMessage())));
+
+        }
+
+    }
+
+
+    private Map<String, List<Instance>> makePartitionMap(Map<Instance, InstancePartitionVariables> instanceVariables,
+                                                        Set<String> P, ImmutableList<Instance> I) {
+        Map<String, List<Instance>> partitions = new HashMap<>();
+        try{
             for (String p : P) {
                 partitions.put(p, new ArrayList<Instance>());
             }
@@ -987,16 +842,15 @@ public class PartitioningAnalysisPhase implements Phase {
                 for (String p : P) {
 
                     GRBVar b_i_p = instanceVariables.get(i).get(p);
-                    if (b_i_p.get(GRB.DoubleAttr.X) > bestPartitionValue) {
+                    if (b_i_p.get(GRB.DoubleAttr.Xn) > bestPartitionValue) {
                         bestPartition = p;
-                        bestPartitionValue = b_i_p.get(GRB.DoubleAttr.X);
+                        bestPartitionValue = b_i_p.get(GRB.DoubleAttr.Xn);
+
                     }
                 }
                 partitions.get(bestPartition).add(i);
 
             }
-
-
         } catch (GRBException e) {
             System.out.println("Error code: " + e.getErrorCode() + ". " +
                     e.getMessage());
@@ -1030,9 +884,7 @@ public class PartitioningAnalysisPhase implements Phase {
     }
 
 
-    private Long ticksUpperBound() {
-        return this.multicoreDB.getExecutionProfileDataBase().values().stream().reduce((a, b) -> a + b).get();
-    }
+
 
 
 
