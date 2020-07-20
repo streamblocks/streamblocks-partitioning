@@ -6,7 +6,6 @@ import ch.epfl.vlsc.analysis.partitioning.parser.MulticoreProfileDataBase;
 import ch.epfl.vlsc.analysis.partitioning.parser.MulticoreProfileParser;
 import ch.epfl.vlsc.analysis.partitioning.util.PartitionSettings;
 
-import ch.epfl.vlsc.settings.PlatformSettings;
 import gurobi.*;
 import org.w3c.dom.*;
 

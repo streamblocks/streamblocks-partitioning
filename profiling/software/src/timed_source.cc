@@ -68,7 +68,7 @@ ART_ACTION_SCHEDULER(TimedSource_action_scheduler) {
 static void constructor(AbstractActorInstance *pBase) {
   ActorInstance_TimedSource *thisActor = (ActorInstance_TimedSource *)pBase;
 
-  if (BUFFER_SIZE / 4 < sizeof(ticks)) {
+  if (BUFFER_SIZE  < sizeof(ticks)) {
     runtimeError(pBase, "Buffer size is too small, minimumm size is %llu bytes",
                  sizeof(ticks));
   }
