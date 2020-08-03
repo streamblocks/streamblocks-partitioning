@@ -1,0 +1,78 @@
+set path_to_packaged "@PROJECT_SOURCE_DIR@/output/kernel/packaged_kernel_${suffix}"
+set path_to_tmp_project "@PROJECT_SOURCE_DIR@/output/kernel/tmp_kernel_pack_${suffix}"
+
+create_project -force kernel_pack $path_to_tmp_project 
+# -- --------------------------------------------------------------------------
+# -- Import Vivado HLS RTL files
+# -- --------------------------------------------------------------------------
+# -- Import files for instance : pass
+set pass_files [glob -directory @CMAKE_CURRENT_BINARY_DIR@/pass/solution/syn/verilog *{v,dat}]
+import_files -norecurse $pass_files
+
+# -- --------------------------------------------------------------------------
+# -- Import StreamBlocks Verilog RTL files
+# -- --------------------------------------------------------------------------
+import_files -norecurse {@PROJECT_SOURCE_DIR@/code-gen/rtl/TriggerTypes.sv}
+import_files -norecurse {@PROJECT_SOURCE_DIR@/code-gen/rtl/trigger.sv}
+import_files -norecurse {@PROJECT_SOURCE_DIR@/code-gen/rtl/fifo.v}
+import_files -norecurse {@PROJECT_SOURCE_DIR@/code-gen/rtl/BandwidthTester.sv}
+import_files -norecurse {@PROJECT_SOURCE_DIR@/code-gen/rtl/BandwidthTester_pure.sv}
+
+# -- --------------------------------------------------------------------------
+# -- Import StreamBlocks Kernel Verilog RTL files
+# -- --------------------------------------------------------------------------
+import_files -norecurse {@PROJECT_SOURCE_DIR@/code-gen/rtl/source_Out_pass_In_input_stage.sv}
+import_files -norecurse {@PROJECT_SOURCE_DIR@/code-gen/rtl/pass_Out_sink_In_output_stage.sv}
+import_files -norecurse {@PROJECT_SOURCE_DIR@/code-gen/rtl/BandwidthTester_control_s_axi.v}
+import_files -norecurse {@PROJECT_SOURCE_DIR@/code-gen/rtl/BandwidthTester_wrapper.sv}
+import_files -norecurse {@PROJECT_SOURCE_DIR@/code-gen/rtl/BandwidthTester_kernel.v}
+
+# -- --------------------------------------------------------------------------
+# -- Import Input/Output stages
+# -- --------------------------------------------------------------------------
+# -- Import files for source_Out_pass_In_input_stage_mem
+set source_Out_pass_In_input_stage_mem_files [glob -directory @CMAKE_CURRENT_BINARY_DIR@/source_Out_pass_In_input_stage_mem/solution/syn/verilog *{v,dat}]
+import_files -norecurse $source_Out_pass_In_input_stage_mem_files
+
+# -- Import files for pass_Out_sink_In_output_stage_mem
+set pass_Out_sink_In_output_stage_mem_files [glob -directory @CMAKE_CURRENT_BINARY_DIR@/pass_Out_sink_In_output_stage_mem/solution/syn/verilog *{v,dat}]
+import_files -norecurse $pass_Out_sink_In_output_stage_mem_files
+
+# -- Set top
+set_property top BandwidthTester_kernel [current_fileset]
+
+# -- Package kernel
+ipx::package_project -root_dir $path_to_packaged -vendor epfl.ch -library RTLKernel -taxonomy /KernelIP -import_files -set_current false
+ipx::unload_core $path_to_packaged/component.xml
+ipx::edit_ip_in_project -upgrade true -name tmp_edit_project -directory $path_to_packaged $path_to_packaged/component.xml
+set_property core_revision 1 [ipx::current_core]
+foreach up [ipx::get_user_parameters] {
+	ipx::remove_user_parameter [get_property NAME $up] [ipx::current_core]
+}
+
+set_property sdx_kernel true [ipx::current_core]
+set_property sdx_kernel_type rtl [ipx::current_core]
+ipx::create_xgui_files [ipx::current_core]
+
+
+ipx::associate_bus_interfaces -busif m_axi_source_Out_pass_In -clock ap_clk [ipx::current_core]
+ipx::add_bus_parameter HAS_BURST [ipx::get_bus_interfaces m_axi_source_Out_pass_In -of_objects [ipx::current_core]]
+ipx::add_bus_parameter SUPPORTS_NARROW_BURST [ipx::get_bus_interfaces m_axi_source_Out_pass_In -of_objects [ipx::current_core]]
+set_property value 0 [ipx::add_bus_parameter HAS_BURST [ipx::get_bus_interfaces m_axi_source_Out_pass_In -of_objects [ipx::current_core]]]
+set_property value 0 [ipx::add_bus_parameter SUPPORTS_NARROW_BURST [ipx::get_bus_interfaces m_axi_source_Out_pass_In -of_objects [ipx::current_core]]]
+
+ipx::associate_bus_interfaces -busif m_axi_pass_Out_sink_In -clock ap_clk [ipx::current_core]
+ipx::add_bus_parameter HAS_BURST [ipx::get_bus_interfaces m_axi_pass_Out_sink_In -of_objects [ipx::current_core]]
+ipx::add_bus_parameter SUPPORTS_NARROW_BURST [ipx::get_bus_interfaces m_axi_pass_Out_sink_In -of_objects [ipx::current_core]]
+set_property value 0 [ipx::add_bus_parameter HAS_BURST [ipx::get_bus_interfaces m_axi_pass_Out_sink_In -of_objects [ipx::current_core]]]
+set_property value 0 [ipx::add_bus_parameter SUPPORTS_NARROW_BURST [ipx::get_bus_interfaces m_axi_pass_Out_sink_In -of_objects [ipx::current_core]]]
+
+ipx::associate_bus_interfaces -busif s_axi_control -clock ap_clk [ipx::current_core]
+
+set_property xpm_libraries {XPM_CDC XPM_MEMORY XPM_FIFO} [ipx::current_core]
+set_property supported_families { } [ipx::current_core]
+set_property auto_family_support_level level_2 [ipx::current_core]
+ipx::update_checksums [ipx::current_core]
+ipx::save_core [ipx::current_core]
+
+close_project -delete
