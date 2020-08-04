@@ -30,6 +30,7 @@ import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
 import java.io.File;
+import java.net.Inet4Address;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -37,6 +38,7 @@ import java.util.stream.Collectors;
 public class PartitioningAnalysisPhase implements Phase {
 
     Context context;
+    CompilationTask task;
     MulticoreProfileDataBase multicoreDB;
     DeviceProfileDataBase accelDB;
 
@@ -55,9 +57,9 @@ public class PartitioningAnalysisPhase implements Phase {
     GRBModel model;
     public PartitioningAnalysisPhase() {
         this.multicoreDB = null;
-        this.multicoreClockPeriod = 1.0 / 3.4; // about 3 GHz
+        this.multicoreClockPeriod = 1.0 / 3.4; // 3.4 GHz
         this.accelDB = null;
-        this.accelClockPeriod = 1.0 / .3; // about 300 MHz
+        this.accelClockPeriod = 1.0 / .300; // 280 MHz
         this.definedCoreCommProfilePath = false;
         this.definedOclProfilePath = false;
         this.definedSystemCProfilePath = false;
@@ -138,6 +140,7 @@ public class PartitioningAnalysisPhase implements Phase {
 
 
         this.context = context;
+        this.task = task;
         getRequiredSettings(task, context);
         MulticoreProfileParser multicoreParser = new MulticoreProfileParser(task, context, this.multicoreClockPeriod);
         multicoreParser.parseExecutionProfile(context.getConfiguration().get(PartitionSettings.multiCoreProfilePath));
@@ -162,12 +165,12 @@ public class PartitioningAnalysisPhase implements Phase {
         int id = 0;
         for(Map<String, List<Instance>> partitions: solutions) {
 
-
             try {
                 model.set(GRB.IntParam.SolutionNumber, id);
                 Double estimated_time = model.getVarByName("T").get(GRB.DoubleAttr.Xn) * 1e-6;
                 System.out.printf("Solution %d (%f ms)\n", id, estimated_time);
                 reportPartition(partitions);
+                printTimingBreakdown(id);
                 createConfig(partitions, context, id);
                 id++;
             } catch (GRBException e) {
@@ -179,6 +182,38 @@ public class PartitioningAnalysisPhase implements Phase {
         return task;
     }
 
+    private void printTimingBreakdown(int id) throws GRBException{
+
+        Double T_total = getVarByName("T");
+        Double T_network = getVarByName("T_network");
+        Double T_lc = getVarByName("T_lc");
+        Double T_cc = getVarByName("T_cc");
+        printVar("T");
+        printVar("T_network");
+        printVar("T_lc");
+        printVar("T_cc");
+        if (this.definedSystemCProfilePath && this.definedOclProfilePath) {
+
+            printVar("T_la");
+            printVar("T_ca");
+            printVar("t_plink_kernel");
+            printVar("t_plink_read");
+            printVar("t_plink_write");
+
+        }
+
+
+    }
+
+    private Double getVarByName(String name) throws GRBException {
+        return model.getVarByName(name).get(GRB.DoubleAttr.Xn) * 1e-6;
+    }
+    private void printVar(String name, Double value) {
+        System.out.printf("%s = %6.6f ms\n", name, value);
+    }
+    private void printVar(String name) throws GRBException{
+        printVar(name, getVarByName(name));
+    }
     private void reportPartition(Map<String, List<Instance>> partitions) {
         for (String p: partitions.keySet()) {
             System.out.printf("\t%s: ", p);
@@ -260,9 +295,29 @@ public class PartitioningAnalysisPhase implements Phase {
 
     }
 
+    private void printStatistics() {
+
+        LinkedHashMap<Instance, Long> softwareInstances =
+                this.multicoreDB.getExecutionProfileDataBase().entrySet()
+                        .stream()
+                        .sorted(Map.Entry.comparingByValue())
+                        .collect(
+                                Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (e1, e2) -> e1, LinkedHashMap::new));
+
+        System.out.println("Software actor stats:");
+        System.out.println("Actor execution stats:\t\tSoftware\t\tHardware (ms)");
+
+        for (Instance instance: this.task.getNetwork().getInstances()) {
+            Double sw = this.multicoreDB.getInstanceTicks(instance) * this.multicoreClockPeriod * 1e-6;
+            Double hw = this.accelDB.getInstanceTicks(instance) * this.accelClockPeriod * 1e-6;
+            System.out.printf("%20s:\t\t%06.4f\t\t%06.4f\t\t(ms)\n",instance.getInstanceName(), sw, hw);
+        }
+
+
+    }
     private ImmutableList<Map<String, List<Instance>>> solveModel(CompilationTask task, Context context) {
         Network network = task.getNetwork();
-
+        printStatistics();
         try {
 
             GRBEnv env = new GRBEnv(true);
@@ -384,6 +439,10 @@ public class PartitioningAnalysisPhase implements Phase {
 
                 GRBVar[] maxTermsArray = termsList.toArray(new GRBVar[termsList.size()]);
 
+                context.getReporter().report(new Diagnostic(Diagnostic.Kind.INFO,
+                        String.format("Maximum t_plink_kernel = %6.6f ms\n", upperAccelTime * 1e-6)));
+
+
                 model.addGenConstrMax(t_plink_kernel, maxTermsArray, 0.0,
                         "t^{plink}_{kernel}=max(\\{b^i_\\{accel\\}\\timest^i_{exec}(accel):i\\inI\\})");
 
@@ -421,11 +480,13 @@ public class PartitioningAnalysisPhase implements Phase {
                     argsAnd[0] = b_l_accel_neg;
                     argsAnd[1] = b_k_accel;
                     model.addGenConstrAnd(b_l_accel_neg_and_b_k_accel, argsAnd,
-                            String.format("b^{~%s,%s}_{accel}=(1-b_%1$s_accel)b_%2$s_accel",
-                                    l.getInstanceName(), k.getInstanceName()));
+                            String.format("b^{~%s,%s}_%s_{accel}=(1-b_%1$s_accel)b_%2$s_accel",
+                                    l.getInstanceName(), k.getInstanceName(), getConnectionName(c)));
                     Long bufferSize = Long.valueOf(this.multicoreDB.getConnectionBytes(c));
                     Long tokens = this.multicoreDB.getTokensExchanged(c);
                     Double txTime = this.accelDB.getPCIeWriteTime(bufferSize, tokens);
+
+                    System.out.printf("PCIe write for %s: %6.6f ms\n", getConnectionName(c), txTime * 1e-6);
                     writeSumExpr.addTerm(txTime, b_l_accel_neg_and_b_k_accel);
                     upperTxTime += txTime;
 
@@ -465,7 +526,8 @@ public class PartitioningAnalysisPhase implements Phase {
                             String.format("~b_{%s}_{accel}=(1-b_%1$s_accl)", k.getInstanceName()));
 
                     GRBVar b_k_accel_neg_and_b_l_accel = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
-                            String.format("b^{%s,%s}_{accel}", k.getInstanceName(), l.getInstanceName()));
+                            String.format("b^{%s,~%s}_%s_{accel}", k.getInstanceName(), l.getInstanceName(),
+                                    getConnectionName(c)));
                     GRBVar[] argsAnd = new GRBVar[2];
                     argsAnd[0] = b_l_accel;
                     argsAnd[1] = b_k_accel_neg;
@@ -476,7 +538,7 @@ public class PartitioningAnalysisPhase implements Phase {
                     Long bufferSize = Long.valueOf(this.multicoreDB.getConnectionBytes(c));
                     Long tokens = this.multicoreDB.getTokensExchanged(c);
                     Double rxTime = this.accelDB.getPCIeReadTime(bufferSize, tokens);
-
+                    System.out.printf("PCIe read for %s: %6.6f ms\n", getConnectionName(c), rxTime * 1e-6);
                     readSumExpr.addTerm(rxTime, b_k_accel_neg_and_b_l_accel);
                     upperRxTime += rxTime;
 
@@ -548,12 +610,13 @@ public class PartitioningAnalysisPhase implements Phase {
 
 
             // The first component is the communication time of actors on the same core
-            GRBLinExpr expr_T_lc = new GRBLinExpr();
+//            GRBLinExpr expr_T_lc = new GRBLinExpr();
             Double upper_T_lc_p = C.stream()
                     .map(c ->
                             this.multicoreDB
                                     .getCommunicationTicks(c, CommonProfileDataBase.CommunicationTicks.Kind.Local))
                     .reduce(Double::sum).get() * this.multicoreClockPeriod;
+            List<GRBVar> T_lc_p_list = new ArrayList<>();
             for (String p: PminusAccel) {
 
                 // Tiem of each partition expression
@@ -564,15 +627,15 @@ public class PartitioningAnalysisPhase implements Phase {
                     Instance j = findSourceInstance(c.getSource(), network);
                     Instance k = findTargetInstance(c.getTarget(), network);
                     GRBVar b_jk_p = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
-                            String.format("b^{(%s,%s)}_%s", j.getInstanceName(), k.getInstanceName(), p));
+                            String.format("b^%s_%s", getConnectionName(c), p));
                     GRBVar[] argsAnd = new GRBVar[2];
                     argsAnd[0] = instanceVariables.get(j).get(p);
                     argsAnd[1] = instanceVariables.get(k).get(p);
-                    model.addGenConstrAnd(b_jk_p, argsAnd, String.format("b^{(%s,%s)}_%s=and(...)",
-                            j.getInstanceName(), k.getInstanceName(), p));
+                    model.addGenConstrAnd(b_jk_p, argsAnd, String.format("b^%s_%s=and(...)", getConnectionName(c), p));
                     Double commTime =
                             this.multicoreDB.getCommunicationTicks(c,
                                     CommonProfileDataBase.CommunicationTicks.Kind.Local) * this.multicoreClockPeriod;
+
                     expr_T_lc_p.addTerm(commTime, b_jk_p);
 
 
@@ -580,22 +643,24 @@ public class PartitioningAnalysisPhase implements Phase {
                 GRBVar T_lc_p = model.addVar(0.0, upper_T_lc_p, 0.0, GRB.CONTINUOUS,
                         String.format("T_lc_%s", p));
                 model.addConstr(T_lc_p, GRB.EQUAL, expr_T_lc_p, String.format("T_lc_%s=...", p));
-                expr_T_lc.addTerm(1.0, T_lc_p);
+                T_lc_p_list.add(T_lc_p);
+//                expr_T_lc.addTerm(1.0, T_lc_p);
 
 
 
             }
+            GRBVar[] T_lc_p_array = T_lc_p_list.toArray(new GRBVar[T_lc_p_list.size()]);
             GRBVar T_lc = model.addVar(0.0, upper_T_lc_p, 0.0, GRB.CONTINUOUS, String.format("T_lc"));
-            model.addConstr(T_lc, GRB.EQUAL, expr_T_lc, "T_lc=...");
-
+//            model.addConstr(T_lc, GRB.EQUAL, expr_T_lc, "T_lc=...");
+            model.addGenConstrMax(T_lc, T_lc_p_array, 0.0, String.format("T_lc=max(..)"));
             Optional<GRBVar> T_la = Optional.empty();
             if (this.definedSystemCProfilePath) {
 
                 // The second component is the time spent in accelerator FIFOs
-                GRBLinExpr expr_T_la = new GRBLinExpr();
-                Double upper_T_la= C.stream()
-                        .map(c -> this.multicoreDB.getTokensExchanged(c) * this.accelClockPeriod)
-                        .reduce(Double::sum).get();
+//                GRBLinExpr expr_T_la = new GRBLinExpr();
+                Double upper_T_la=
+                    Collections.max(C.map(c -> this.multicoreDB.getTokensExchanged(c) * this.accelClockPeriod));
+                List<GRBVar> fifoTimes = new ArrayList<>();
                 for (Connection c: C) {
                     Instance j = findSourceInstance(c.getSource(), network);
                     Instance k = findTargetInstance(c.getTarget(), network);
@@ -607,15 +672,25 @@ public class PartitioningAnalysisPhase implements Phase {
                     argsAnd[0] = instanceVariables.get(j).get(accelPartition);
                     argsAnd[1] = instanceVariables.get(k).get(accelPartition);
                     model.addGenConstrAnd(b_jk_accel, argsAnd,
-                            String.format("b^{(%s,%s)}_accel=and(...)", j.getInstanceName(), k.getInstanceName()));
+                            String.format("b^{(%s,%s)_%s}_accel=and(...)",
+                                    j.getInstanceName(), k.getInstanceName(), getConnectionName(c)));
                     // Time spent in FIFOs is modelled as tokens * clock, since FIFOs have a bandwidth of
                     // one token per cycle.
                     Long tokens = this.multicoreDB.getTokensExchanged(c);
                     Double commTime = tokens.doubleValue() * this.accelClockPeriod;
-                    expr_T_la.addTerm(commTime, b_jk_accel);
+                    GRBVar T_la_c = model.addVar(0.0, upper_T_la, 0.0, GRB.CONTINUOUS,
+                            String.format("T_la_%s", getConnectionName(c)));
+                    GRBLinExpr T_la_c_expr = new GRBLinExpr();
+                    T_la_c_expr.addTerm(commTime, b_jk_accel);
+                    model.addConstr(T_la_c, GRB.EQUAL, T_la_c_expr,
+                            String.format("T_la_%s=...", getConnectionName(c)));
+                    fifoTimes.add(T_la_c);
+                    //expr_T_la.addTerm(commTime, b_jk_accel);
                 }
                 GRBVar real_T_la = model.addVar(0.0, upper_T_la, 0.0, GRB.CONTINUOUS, "T_la");
-                model.addConstr(real_T_la, GRB.EQUAL, expr_T_la, "T_la=...");
+                GRBVar[] maxTermsArray = fifoTimes.toArray(new GRBVar[fifoTimes.size()]);
+                model.addGenConstrMax(real_T_la, maxTermsArray, 0.0, "T_la=max(..)");
+//                model.addConstr(real_T_la, GRB.EQUAL, expr_T_la, "T_la=...");
                 T_la = Optional.of(real_T_la);
             }
 
@@ -629,10 +704,10 @@ public class PartitioningAnalysisPhase implements Phase {
             GRBLinExpr expr_T_cc = new GRBLinExpr();
             for (Connection c: C) {
 
-                String connectionName = String.format("{%s.%s->%s.%s}",
-                        c.getSource().getInstance().orElse(""), c.getSource().getPort(),
-                        c.getTarget().getInstance().orElse(""), c.getTarget().getPort());
-
+//                String connectionName = String.format("{%s.%s->%s.%s}",
+//                        c.getSource().getInstance().orElse(""), c.getSource().getPort(),
+//                        c.getTarget().getInstance().orElse(""), c.getTarget().getPort());
+                String connectionName = getConnectionName(c);
                 Instance j = findSourceInstance(c.getSource(), network);
                 Instance k = findTargetInstance(c.getTarget(), network);
 
@@ -657,7 +732,7 @@ public class PartitioningAnalysisPhase implements Phase {
                         model.addGenConstrAnd(b_jk_pq, andArgs,
                                 String.format("b^{(%s,%s)}_{(%s,%s)}=and(...)", j.getInstanceName(),k.getInstanceName(), p, q));
                         Double commTime = this.multicoreDB.getCommunicationTicks(c,
-                                CommonProfileDataBase.CommunicationTicks.Kind.Global);
+                                CommonProfileDataBase.CommunicationTicks.Kind.Global) * this.multicoreClockPeriod;
 
                         expr_T_cc_c_p.addTerm(commTime, b_jk_pq);
 
@@ -882,8 +957,13 @@ public class PartitioningAnalysisPhase implements Phase {
 
                         ).findFirst().get();
     }
+    private String getConnectionName(Connection c) {
 
+        return String.format("{%s.%s->%s.%s}",
+                c.getSource().getInstance().orElse(""), c.getSource().getPort(),
+                c.getTarget().getInstance().orElse(""), c.getTarget().getPort());
 
+    }
 
 
 

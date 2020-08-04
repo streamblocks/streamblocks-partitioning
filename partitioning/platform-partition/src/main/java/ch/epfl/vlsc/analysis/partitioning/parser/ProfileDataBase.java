@@ -46,6 +46,10 @@ public abstract class ProfileDataBase<Obj, T> {
 
         return this.db.keySet();
     }
+    public Set<Map.Entry<Obj, T>> entrySet() {
+        return this.db.entrySet();
+    }
+
 
     public void forEach(BiConsumer<? super Obj, ? super T> action) {
         this.db.forEach(action);
