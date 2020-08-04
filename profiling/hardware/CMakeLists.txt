@@ -9,9 +9,9 @@ set(CMAKE_CXX_STANDARD 14)
 
 
 # -- test parameters
-set(NUM_LOOPS_VALUE "100000000" CACHE STRING "Number repeated experiments")
-set(BUFFER_SIZE_MIN "32" CACHE STRING "Minimum size of the FIFOs")
-set(BUFFER_SIZE_MAX "32768" CACHE STRING "Maximum size of the FIFOs")
+set(NUM_LOOPS_VALUE "100000" CACHE STRING "Number repeated experiments")
+set(BUFFER_SIZE_MIN "8" CACHE STRING "Minimum size of the FIFOs")
+set(BUFFER_SIZE_MAX "4194304" CACHE STRING "Maximum size of the FIFOs")
 
 
 # -- Configure output folder for generated binary

@@ -107,10 +107,10 @@ ART_ACTION_SCHEDULER(source_scheduler){
 
 	ActorInstance_source *thisActor = (ActorInstance_source*) pBase;
 	ART_ACTION_SCHEDULER_ENTER(0, 1)
-	printf("Starting source\n");
 	uint32_t availOutput = pinAvailOut_uint32_t(ART_OUTPUT(0));
+	// printf("Starting source %d\n", availOutput);
 	if (availOutput >= BUFFER_SIZE_WORDS && thisActor->loop_counter < NUM_LOOPS) {
-		printf("Sourcing %d bytes\n", BUFFER_SIZE_WORDS * sizeof(uint32_t));
+		// printf("Sourcing %d bytes\n", BUFFER_SIZE_WORDS * sizeof(uint32_t));
 		ART_ACTION_ENTER(send, 0);
 		pinWriteRepeat_uint32_t(ART_OUTPUT(0), thisActor->buffer, BUFFER_SIZE_WORDS);
 		thisActor->loop_counter ++;

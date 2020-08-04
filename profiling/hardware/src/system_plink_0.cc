@@ -102,7 +102,7 @@ ActorClass ActorClass_system_plink_0
         0, // -- setParam not needed anymore (we instantiate with params)
         ActorInstance_system_plink_0_scheduler,
         ActorInstance_system_plink_0_destructor, 1, inputPortDescriptions, 1,
-        outputPortDescriptions, 3, actionDescriptions, 0, conditionDescriptions,
+        outputPortDescriptions, 0, actionDescriptions, 0, conditionDescriptions,
         0, stateVariableDescriptions);
 
 // -- Constructor definition
@@ -180,7 +180,7 @@ ActorInstance_system_plink_0_destructor(AbstractActorInstance *pBase) {
   printf("Kernel: %6.3f MiB/s\n", kernel_bw);
   printf("Write : %6.3f MiB/s\n", write_bw);
   printf("Read  : %6.3f MiB/s\n", read_bw);
-  printf("Siz   : %6.3f  KiB/s\n", size_read_bw * 1024.);
+  printf("Size  : %6.3f  KiB/s\n", size_read_bw * 1024.);
 
   char filename[1024];
   sprintf(filename, "dump_%d_%d.xml", BUFFER_SIZE, NUM_LOOPS);
@@ -225,7 +225,7 @@ ART_ACTION_SCHEDULER(ActorInstance_system_plink_0_scheduler) {
 CHECK : {
   uint32_t tokens_source_Out_pass_In =
       pinAvailIn_uint32_t(IN0_source_Out_pass_In);
-
+  // printf("Checking %d\n", tokens_source_Out_pass_In);
   bool should_start =
       (tokens_source_Out_pass_In > 0) || thisActor->should_retry;
   if (should_start) {
@@ -238,7 +238,6 @@ CHECK : {
 }
 TX : { // -- Transmit to FPGA memory
   ART_ACTION_ENTER(TX, 0);
-  printf("Launching kernel\n");
   // -- set request size
   thisActor->source_Out_pass_In_request_size =
       pinAvailIn_uint32_t(IN0_source_Out_pass_In);
@@ -248,6 +247,7 @@ TX : { // -- Transmit to FPGA memory
   pinPeekRepeat_uint32_t(IN0_source_Out_pass_In,
                          thisActor->source_Out_pass_In_buffer,
                          thisActor->source_Out_pass_In_request_size);
+  // printf("Launching kernel %d\n", thisActor->source_Out_pass_In_request_size);
 
   // -- copy the host buffers to device
   DeviceHandleEnqueueWriteBuffers(&thisActor->dev);
@@ -267,9 +267,9 @@ RX : { // -- Receive from FPGA
   DeviceHandleWaitForReadSize(&thisActor->dev);
   // -- read the device outputs buffers
 
-  printf("%d %d %d\n", thisActor->source_Out_pass_In_size[0],
-         thisActor->pass_Out_sink_In_size[0],
-         thisActor->source_Out_pass_In_request_size);
+  // printf("%d %d %d\n", thisActor->source_Out_pass_In_size[0],
+  //        thisActor->pass_Out_sink_In_size[0],
+  //        thisActor->source_Out_pass_In_request_size);
   DeviceHandleEnqueueReadBuffers(&thisActor->dev);
 
   thisActor->total_request = 0;
@@ -277,9 +277,12 @@ RX : { // -- Receive from FPGA
   thisActor->total_produced = 0;
   thisActor->should_retry = false;
   // -- Consume on behalf of device
-  if (thisActor->source_Out_pass_In_size[0] > 0)
+  if (thisActor->source_Out_pass_In_size[0] > 0) {
+    ART_ACTION_ENTER(CONSUME, 1);
     pinConsumeRepeat_uint32_t(IN0_source_Out_pass_In,
                               thisActor->source_Out_pass_In_size[0]);
+    ART_ACTION_ENTER(CONSUME, 1);
+  }
   thisActor->total_consumed += thisActor->source_Out_pass_In_size[0];
   thisActor->total_request += thisActor->source_Out_pass_In_request_size;
 
@@ -290,18 +293,18 @@ RX : { // -- Receive from FPGA
   if (thisActor->total_produced == 0 && thisActor->total_consumed == 0 &&
       thisActor->total_request > 0)
     runtimeError(pBase, "Potential device deadlock\n");
-  if (thisActor->total_produced > 0 || thisActor->total_consumed > 0) {
-    ART_ACTION_ENTER(RX, 1);
-    ART_ACTION_EXIT(RX, 1);
+  if (thisActor->total_produced > 0) {
+    ART_ACTION_ENTER(RX, 2);
+    ART_ACTION_EXIT(RX, 2);
     thisActor->program_counter = 3;
     goto WRITE;
   } else {
     thisActor->program_counter = 0;
-    goto YIELD;
+    goto CHECK;
   }
 }
 WRITE : { // -- retry reading
-  ART_ACTION_ENTER(WRITE, 2);
+  
   // -- wait for read transfer to complete
 
   DeviceHandleWaitForReadBuffers(&thisActor->dev);
@@ -312,13 +315,13 @@ WRITE : { // -- retry reading
       MIN(pass_Out_sink_In_remain, pinAvailOut_uint32_t(OUT0_pass_Out_sink_In));
   if (pass_Out_sink_In_remain > 0) { // -- if there are tokens remaining
     if (pass_Out_sink_In_to_write > 0) {
-      ART_ACTION_ENTER(WRITE, 2);
+      ART_ACTION_ENTER(WRITE, 3);
       pinWriteRepeat_uint32_t(
           OUT0_pass_Out_sink_In,
           &thisActor
                ->pass_Out_sink_In_buffer[thisActor->pass_Out_sink_In_offset],
           pass_Out_sink_In_to_write);
-      ART_ACTION_EXIT(WRITE, 2);
+      ART_ACTION_EXIT(WRITE, 3);
     }
 
     thisActor->pass_Out_sink_In_offset += pass_Out_sink_In_to_write;
@@ -357,7 +360,7 @@ WRITE : { // -- retry reading
   } else {
     thisActor->program_counter = 3;
   }
-  ART_ACTION_EXIT(WRITE, 2);
+  
   goto YIELD;
 }
 YIELD : {
