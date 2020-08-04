@@ -1,6 +1,7 @@
 package ch.epfl.vlsc.analysis.partitioning.parser;
 
 
+import gurobi.GRB;
 import se.lth.cs.tycho.ir.network.Instance;
 
 import java.util.Collections;
@@ -74,7 +75,7 @@ public class DeviceProfileDataBase extends CommonProfileDataBase{
         Double outputStageTicks = data.getKernelTicks().doubleValue() / 2.0;
         Double readSizeTicks = data.getReadSizeTicks().doubleValue();
         Double readTicks = data.getReadTicks().doubleValue();
-
+        outputStageTicks = Double.valueOf(0);
         Double averageTime = (outputStageTicks + readSizeTicks + readTicks) / data.getRepeats().doubleValue();
         Double numTransfers = tokensExchanged.doubleValue() / bufferSize.doubleValue();
 
@@ -85,7 +86,7 @@ public class DeviceProfileDataBase extends CommonProfileDataBase{
         PCIeTicks data = getPCIeTicks(bufferSize);
         Double inputStageTicks = data.kernelTicks.doubleValue() / 2.0;
         Double writeTicks = data.getWriteTicks().doubleValue();
-
+        inputStageTicks = Double.valueOf(0);
 
         Double averageTime = (inputStageTicks + writeTicks) / data.getRepeats().doubleValue();
         Double numTransfers = tokensExchanged.doubleValue() / bufferSize.doubleValue();
