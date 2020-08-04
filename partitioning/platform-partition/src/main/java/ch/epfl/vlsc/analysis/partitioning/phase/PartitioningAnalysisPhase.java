@@ -444,10 +444,6 @@ public class PartitioningAnalysisPhase implements Phase {
                     System.out.printf("Accel FIFO time %s: %6.6f \n", getConnectionName(c), commTime * 1e-6);
                     //expr_T_la.addTerm(commTime, b_jk_accel);
                 }
-//                GRBVar real_T_la = model.addVar(0.0, upper_T_la, 0.0, GRB.CONTINUOUS, "T_la");
-//                GRBVar[] maxTermsArray = fifoTimes.toArray(new GRBVar[fifoTimes.size()]);
-//                model.addGenConstrMax(real_T_la, maxTermsArray, 0.0, "T_la=max(..)");
-
 
                 // First off, the kernel time
                 // terms list for t^{plink}_{kernel} = max(\{b^i_\{accel\} \times t^i_{exec}(accel): i \in I\})
