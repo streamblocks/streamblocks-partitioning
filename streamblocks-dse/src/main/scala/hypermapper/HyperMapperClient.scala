@@ -1,0 +1,6 @@
+package hypermapper
+
+class HyperMapperClient {
+
+
+}
