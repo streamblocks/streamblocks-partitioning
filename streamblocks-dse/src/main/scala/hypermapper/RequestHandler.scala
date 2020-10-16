@@ -23,11 +23,30 @@ case class RequestHandler(input: BufferedReader,
         if (ix == 0)
           Seq()
         else {
-          val values = input.readLine().split(",").map(_.trim.toInt)
-          val network = Network(
-            name = config.network.name,
-            actors = (keys zip values) map {case (k, v) => Actor(k, v, config.numCores)}
-          )
+          val values = input.readLine().split(",").map(_.trim)
+          val network = if (config.symmetric) {
+            assert(values.length == 1, s"Symmetric core mapping uses only a single variable not ${values.length}!")
+            val growthSequenceIndex: BigInt = BigInt(values.head)
+            val growthSequence = config.stirlingTable.get.growthSequence(config.numCores, growthSequenceIndex)
+            Network(
+              name = config.network.name,
+              actors = (config.network.actors zip growthSequence) map {
+                case(actor, affinity) =>
+                  Actor(actor.name, affinity, config.numCores)
+              },
+              index = Some(HMSymmetricPartitionParam(utils.Constants.PARTITION_INDEX, growthSequenceIndex, config.numCores))
+            )
+
+          } else {
+            val typedValues: Seq[Int] = values.map(v => v.toInt)
+            Network(
+              name = config.network.name,
+              actors = (keys zip typedValues) map {
+                case (name, affinity) =>
+                  Actor(name, affinity, config.numCores)
+              }
+            )
+          }
           network +: generateNetworks(ix - 1)
         }
       }
@@ -72,6 +91,7 @@ case class RequestHandler(input: BufferedReader,
             case "End"                => running = false
             case "Pareto"             => running = false
             case "End of HyperMapper" => running = false
+            case msg@_ => throw new RuntimeException("Unsupported request " + msg)
           }
         }
       }

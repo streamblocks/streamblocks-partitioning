@@ -4,6 +4,8 @@ object Constants {
 
   val HMTrue: String = "True"
   val HMFalse: String = "False"
-  val HMIterations: Int = 2
-  val HMDOE: Int = 2
+  val HMIterations: Int = 20
+  val HMDOE: Int = 30
+
+  val PARTITION_INDEX: String = "partition_index"
 }

@@ -28,7 +28,7 @@ case class ResponseHandler(output: BufferedWriter,
 
           val respStrings: Seq[String] = evaluatedPoints.map {
             case DesignPoint(params, obj) =>
-              params.map(_.affinity.toString).mkString(",") + "," + (obj match {
+              params.map(_.getValue).mkString(",") + "," + (obj match {
                 case InfeasibleObjective() =>
                   Seq("0.0", "0.0", utils.Constants.HMFalse).mkString(",")
                 case FeasibleObjective(execTime, util) =>

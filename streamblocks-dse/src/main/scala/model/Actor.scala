@@ -1,19 +1,19 @@
 package model
 
-import hypermapper.HMPartitionParam
+import hypermapper.{HMAsymmetricPartitionParam, HMParam, HMSymmetricPartitionParam}
 
 
 
-case class Network(name: String, actors: Seq[Actor])
+case class Network(name: String, actors: Seq[Actor], index: Option[HMSymmetricPartitionParam] = None)
 
-case class Actor(name: String, partition: HMPartitionParam)
+case class Actor(name: String, partition: HMParam)
 
 
 
 object Actor {
 
-  def apply(name: String, partition: HMPartitionParam) = new Actor(name, partition)
-  def apply(name: String, affinity: Int, numCores: Int) = new Actor(name, HMPartitionParam(name, affinity, numCores))
+  def apply(name: String, partition: HMParam) = new Actor(name, partition)
+  def apply(name: String, affinity: Int, numCores: Int) = new Actor(name, HMAsymmetricPartitionParam(name, affinity, numCores))
 
 
 }

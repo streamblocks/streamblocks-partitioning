@@ -12,7 +12,7 @@ case class ProgramStats(exitCode: Int, time: Double, stdout: String, stderr: Str
 case class ProgramRunner(workDir: File, binary: File,
                          input: BlockingQueue[Seq[Network]],
                          output: BlockingQueue[Seq[DesignPoint]],
-                        optimalNetwork: BlockingQueue[Network]) extends Runnable {
+                         optimalNetwork: BlockingQueue[Network]) extends Runnable {
 
   private var running = true
   private var optimalFound: (Network, Double) = (Network("null_network", Seq()), Double.MaxValue)
@@ -40,7 +40,8 @@ case class ProgramRunner(workDir: File, binary: File,
     ProgramStats(exitCode, duration, programOutput._1.toString, programOutput._2.toString())
   }
 
-  def getUtil(network: Network): Int = network.actors.map(_.partition.affinity).max + 1
+//  def getUtil(network: Network): Int = network.actors.map(_.partition.affinity).max + 1
+  def getUtil(network: Network) = 100
   def getDesignPoint(network: Network, time: Double) = DesignPoint(network, time, getUtil(network))
   def getDesingPoint(network: Network) = DesignPoint(network)
   override def run(): Unit = {

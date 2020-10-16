@@ -17,13 +17,22 @@ object DesignObjective {
   def apply() = new InfeasibleObjective()
 }
 
-case class DesignPoint(params: Seq[HMPartitionParam], objective: DesignObjective)
+case class DesignPoint(params: Seq[HMParam], objective: DesignObjective)
 
 object DesignPoint {
 
-  def apply(params: Seq[HMPartitionParam], objective: DesignObjective) =
-    new DesignPoint(params, objective)
-  def apply(network: Network, execTime: Double, util: Int) =
-    new DesignPoint(network.actors.map(_.partition), DesignObjective(execTime, util))
-  def apply(network: Network) = new DesignPoint(network.actors.map(_.partition), InfeasibleObjective())
+
+  def apply(network: Network, execTime: Double, util: Int): DesignPoint = network.index match {
+    case None =>
+      new DesignPoint(network.actors.map(_.partition), DesignObjective(execTime, util))
+    case Some(ix) =>
+      new DesignPoint(Seq(ix), DesignObjective(execTime, util))
+  }
+  def apply(network: Network): DesignPoint = network.index match {
+    case None =>
+      DesignPoint(network.actors.map(_.partition), InfeasibleObjective())
+    case Some(ix) =>
+      DesignPoint(Seq(ix), InfeasibleObjective())
+  }
+
 }

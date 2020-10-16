@@ -3,8 +3,8 @@ package hypermapper
 import java.io.{File, PrintWriter}
 import java.nio.file.Paths
 
-case class HyperMapperConfig(appName : String, numInter: Integer, doe: Integer,
-                             dseParams: Seq[HMPartitionParam]) {
+case class HyperMapperConfig(appName : String, numIter: Integer, doe: Integer,
+                             dseParams: Seq[HMParam]) {
 
   def emitJson(outputDir: File) = {
     val jsonFile: String = outputDir + "/" + appName + ".json"
@@ -35,7 +35,7 @@ case class HyperMapperConfig(appName : String, numInter: Integer, doe: Integer,
         s"""
            |    "$p": {
            |      "parameter_type": "${p.getType}",
-           |      "values": [${p.getType.toInt}, ${p.getType.maxValue}]
+           |      "values": ${p.getType.getRange}
            |    }${if (dseParams.indexOf(p) == dseParams.length - 1) "" else ","}
            |""".stripMargin)
     )
@@ -46,7 +46,7 @@ case class HyperMapperConfig(appName : String, numInter: Integer, doe: Integer,
          |  "models": {
          |    "model": "random_forest"
          |  },
-         |  "optimization_iterations": ${numInter},
+         |  "optimization_iterations": ${numIter},
          |  "optimization_objectives": [
          |    "exec_time",
          |    "num_cores"
