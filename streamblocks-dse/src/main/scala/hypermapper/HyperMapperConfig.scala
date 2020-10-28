@@ -17,7 +17,7 @@ case class HyperMapperConfig(appName : String, numIter: Integer, doe: Integer,
       s"""
          |  "application_name": "${appName}",
          |  "design_of_experiment" : {
-         |    "doe_type": "random sampling",
+         |    "doe_type": "standard latin hypercube",
          |    "number_of_samples": ${doe}
          |  },
          |  "feasible_output" : {
@@ -44,12 +44,12 @@ case class HyperMapperConfig(appName : String, numIter: Integer, doe: Integer,
          |  },
          |  "log_file": "${outputDir}/${appName}.log",
          |  "models": {
-         |    "model": "random_forest"
+         |    "model": "random_forest",
+         |    "number_of_trees": 100
          |  },
          |  "optimization_iterations": ${numIter},
          |  "optimization_objectives": [
-         |    "exec_time",
-         |    "num_cores"
+         |    "exec_time"
          |  ],
          |  "optimization_method": "bayesian_optimization",
          |

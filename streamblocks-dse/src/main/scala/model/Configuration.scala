@@ -9,14 +9,13 @@ object Configuration {
 
   def write(configDir: File, network: Network): Path = {
 
-    val nonEmptyPartitions: Seq[String] = network.actors.map(_.partition.getValue).toSet.toSeq.sorted
-
+    val nonEmptyPartitions: Seq[Int] = network.actors.map(_.partition.getValue.toInt).toSet.toSeq.sorted
     val partitions = nonEmptyPartitions.map(p =>
-      (p, network.actors.filter(_.partition.getValue == p))
+      (p, network.actors.filter(_.partition.getValue.toInt == p))
     )
 
     def xmlInstances(actors: Seq[Actor]) = actors.map(actor => <instance id={actor.name}/>)
-    def xmlPartition(partition: (String, Seq[Actor])) = {
+    def xmlPartition(partition: (Int, Seq[Actor])) = {
       val partId = partition._1
       val actors = partition._2
       <partition id={partId.toString}>{xmlInstances(actors)}</partition>
@@ -32,4 +31,6 @@ object Configuration {
     XML.save(xmlPath, configsFormatted)
     Paths.get(xmlPath)
   }
+
+
 }

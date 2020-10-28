@@ -42,8 +42,8 @@ case class ProgramRunner(workDir: File, binary: File,
 
 //  def getUtil(network: Network): Int = network.actors.map(_.partition.affinity).max + 1
   def getUtil(network: Network) = 100
-  def getDesignPoint(network: Network, time: Double) = DesignPoint(network, time, getUtil(network))
-  def getDesingPoint(network: Network) = DesignPoint(network)
+  def getDesignPoint(network: Network, time: Double) = DesignPoint(network, time)
+  def getDesignPoint(network: Network) = DesignPoint(network)
   override def run(): Unit = {
     try {
 
@@ -57,12 +57,12 @@ case class ProgramRunner(workDir: File, binary: File,
               if (state.exitCode == 0)
                 (n, getDesignPoint(n, state.time))
               else
-                (n, getDesingPoint(n))
+                (n, getDesignPoint(n))
             })
 
             val feasibles = objectives.filter(o => o._2.objective match {
               case InfeasibleObjective() => false
-              case FeasibleObjective(_, _) => true
+              case FeasibleObjective(_) => true
             })
             if (feasibles.length > 0) {
               val bestPoint = feasibles.minBy(p => p._2.objective.getObjective)

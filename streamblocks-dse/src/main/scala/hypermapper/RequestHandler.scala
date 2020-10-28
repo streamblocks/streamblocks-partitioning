@@ -15,6 +15,11 @@ case class RequestHandler(input: BufferedReader,
                           config: Config) extends Runnable {
   private var running: Boolean = true
 
+  def flattenedGrowthSequenceIndex(indexSeq: Seq[HMSymmetricPartitionParam]): BigInt = indexSeq match {
+    case Seq() => BigInt(0)
+    case sq@_ =>
+      sq.head.value + sq.head.size * flattenedGrowthSequenceIndex(sq.tail)
+  }
   def createNetworks(requestCount: Int) = {
     val keys = input.readLine().split(",").map(_.trim)
     keysOut.put((requestCount, keys))
@@ -25,8 +30,16 @@ case class RequestHandler(input: BufferedReader,
         else {
           val values = input.readLine().split(",").map(_.trim)
           val network = if (config.symmetric) {
-            assert(values.length == 1, s"Symmetric core mapping uses only a single variable not ${values.length}!")
-            val growthSequenceIndex: BigInt = BigInt(values.head)
+            val definedParams = config.jsonConf.dseParams
+            assert(values.length == definedParams.length, "json config params and request param mismatch!")
+            val recvParams = (keys zip values) map {
+              case (name, value) =>
+                val size = definedParams.find(p => p.toString == name).getOrElse(
+                  throw new RuntimeException(s"could not find parameter ${name}"))
+                  .asInstanceOf[HMSymmetricPartitionParam].size
+                HMSymmetricPartitionParam(name, BigInt(value), size)
+            } sortBy (p => p.name.substring(utils.Constants.PARTITION_INDEX.length + 1).toInt)
+            val growthSequenceIndex: BigInt = flattenedGrowthSequenceIndex(recvParams)
             val growthSequence = config.stirlingTable.get.growthSequence(config.numCores, growthSequenceIndex)
             Network(
               name = config.network.name,
@@ -34,7 +47,7 @@ case class RequestHandler(input: BufferedReader,
                 case(actor, affinity) =>
                   Actor(actor.name, affinity, config.numCores)
               },
-              index = Some(HMSymmetricPartitionParam(utils.Constants.PARTITION_INDEX, growthSequenceIndex, config.numCores))
+              index = Some(recvParams)
             )
 
           } else {

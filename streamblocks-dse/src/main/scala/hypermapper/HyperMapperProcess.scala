@@ -9,11 +9,11 @@ import scala.sys.process.ProcessIO
 case class HyperMapperProcess(hmHome: String, workDir: File, jsonConfig: File, pipeSize: Int) {
 
 
-  private var hmProcess: process.ProcessBuilder =
-    process.Process(
-      command = Seq("python3", hmHome + "/scripts/hypermapper.py", jsonConfig.toString),
-      cwd = workDir,
-      extraEnv = ("PYTHONPATH", hmHome + "/scripts"))
+//  private var hmProcess: process.ProcessBuilder =
+//    process.Process(
+//      command = Seq("python3", hmHome + "/scripts/hypermapper.py", jsonConfig.toString),
+//      cwd = workDir,
+//      extraEnv = ("PYTHONPATH", hmHome + "/scripts"))
 
   private var reader: java.io.BufferedReader = _
   private var writer: java.io.BufferedWriter = _
@@ -83,14 +83,19 @@ case class HyperMapperProcess(hmHome: String, workDir: File, jsonConfig: File, p
   }
   def run(): (BufferedReader, BufferedWriter, BufferedReader) = {
 
-
+    val cmdSeq = Seq("python3", hmHome + "/scripts/hypermapper.py", jsonConfig.toString)
+    val hmProcess: process.ProcessBuilder =
+      process.Process(
+        command = cmdSeq,
+        cwd = workDir,
+        extraEnv = ("PYTHONPATH", hmHome + "/scripts"))
     reader = new BufferedReader(new InputStreamReader(pipeOStream))
     writer = new BufferedWriter(new OutputStreamWriter(pipeIStream))
     error = new BufferedReader(new InputStreamReader(pipeErrStream))
     // TODO: take care of stderr
     val hmIO = new ProcessIO(inputWriter, outputReader, errorReader) //stderr is discarded
     // Execute the process (in background)
-    println("Executing " + hmProcess)
+    println("Starting HyperMapper ( " + cmdSeq.mkString(" ") + " )")
     hmProcess run hmIO
     (reader, writer, error)
   }

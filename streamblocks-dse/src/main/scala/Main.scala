@@ -2,7 +2,7 @@ import java.io.File
 import java.nio.file.{Files, Paths}
 import java.util.concurrent.LinkedBlockingQueue
 
-import hypermapper.{DesignPoint, HMAsymmetricPartitionParam, HMPartitionParam, HMSymmetricPartitionParam, HyperMapperConfig, HyperMapperProcess, ProgramRunner, RequestHandler, ResponseHandler}
+import hypermapper.{DesignPoint, HMSymmetricPartitionParam, HyperMapperConfig, HyperMapperProcess, ProgramRunner, RequestHandler, ResponseHandler}
 import model.{Actor, Configuration, Network}
 import utils.Config
 
@@ -103,20 +103,28 @@ object Main {
         Option.empty
       }
 
-//
-//      dse_table.printTable
-//      val dse_size=  dse_table(n, m)
-//
-//      println(s"Size of the space ${dse_size}")
-//      println(s"partition vector ${dse_table.growthSequence(m, 4)}")
-
       val actorList = instances.map(_.toString).toList
 
       for (cores <- 2 to Seq(numCores, instances.length).min) {
 
-        println(s"Starting optimization with ${instances.length} actors ${cores} cores (symmetric = ${symmetricAnalysis})")
+
 
         val network =  Network(networkName, actorList.map(actor => Actor(actor, 0, cores)))
+
+
+        val dseSize = dseTable.get(network.actors.length, cores)
+
+        val jsonConfig = HyperMapperConfig(
+            appName = networkName + "_" + cores + (if (symmetricAnalysis) "_sym" else ""),
+            numIter = utils.Constants.HMIterations,
+            doe = utils.Constants.HMDOE,
+            dseParams =
+            if (symmetricAnalysis)
+                HMSymmetricPartitionParam.chunked(utils.Constants.PARTITION_INDEX, dseSize)
+            else
+                network.actors.map(_.partition)
+        )
+
         val config = Config(
           networkFile = configFile,
           numCores = cores,
@@ -125,27 +133,18 @@ object Main {
           workDir = workPath.toFile,
           network = network,
           symmetric = symmetricAnalysis,
-          stirlingTable = dseTable
+          stirlingTable = dseTable,
+          jsonConf = jsonConfig
         )
-
-        val jsonConfig = HyperMapperConfig(
-          appName = networkName + "_" + config.numCores + (if (config.symmetric) "_sym" else ""),
-          numIter = utils.Constants.HMIterations,
-          doe = utils.Constants.HMDOE,
-          dseParams =
-            if (config.symmetric)
-              Seq(HMSymmetricPartitionParam(utils.Constants.PARTITION_INDEX, 0, dseTable.get(network.actors.length, config.numCores)))
-            else
-              network.actors.map(_.partition)
-        )
+        println(s"Starting optimization with ${instances.length} actors ${cores} and cores (symmetric = ${symmetricAnalysis}, dse size = ${dseSize})")
 
         val jsonFile = jsonConfig.emitJson(config.outputDir)
+
 
         val hmHome = sys.env.getOrElse("HYPERMAPPER_HOME", throw new RuntimeException("HYPERMAPPER_HOME env variable not set."))
 
         val hmProcess = HyperMapperProcess(hmHome, outputPath.toFile, jsonFile.toFile, 2048)
         val (reader, writer, error) = hmProcess.run
-
 
         val requestQueue = new LinkedBlockingQueue[Seq[Network]](5000)
         val responseQueue = new LinkedBlockingQueue[Seq[DesignPoint]](5000)
@@ -188,92 +187,8 @@ object Main {
           configDir = config.outputDir,
           network = Network(optimalPoint.name + "_" + cores + "_optimal", optimalPoint.actors)
         )
-
       }
-//      for(i <- Range(0, dse_size.toInt)) {
-//        println(table.get(m, i))
-//      }
-//
-      //      println(utils.Stirling.recursive(n, m))
-//      println(utils.RestrictedGrowthSequence.search(n, m, 0))
-//      print(utils.RestrictedGrowthSequence.getCount(n, m))
-//      if (numCores < 2)
-//        throw new RuntimeException("Invalid number of cores")
-//      for (cores <- 2 to numCores) {
-//
-//        val actors = instances.map(inst => Actor(inst.toString, HMPartitionParam(inst.toString, 0, cores)))
-//        val network = Network(networkName, actors)
-//
-//        val config = Config(
-//          networkFile = configFile,
-//          numCores = cores,
-//          outputDir = outputPath.toFile,
-//          programBinary = binaryProgram,
-//          workDir = workPath.toFile,
-//          network = network
-//        )
-//
-//        val stirlingNum = utils.Stirling(actors.length, config.numCores)
-//        println("Starting analysis with " + actors.length + " actors mapped to " + config.numCores + s" cores (possible partitions " + stirlingNum + ")")
 
-//        val jsonConfig = HyperMapperConfig(
-//          appName = networkName + "_" + config.numCores,
-//          numInter = utils.Constants.HMIterations,
-//          doe = utils.Constants.HMDOE,
-//          dseParams = actors.map(_.partition)
-//        )
-//
-//        val jsonFile = jsonConfig.emitJson(outputPath.toFile)
-//
-//        val hmHome = sys.env.getOrElse("HYPERMAPPER_HOME", throw new RuntimeException("HYPERMAPPER_HOME env variable not set."))
-//
-//        val hmProcess = HyperMapperProcess(hmHome, outputPath.toFile, jsonFile.toFile, 2048)
-//        val (reader, writer, error) = hmProcess.run
-//
-//
-//        val requestQueue = new LinkedBlockingQueue[Seq[Network]](5000)
-//        val responseQueue = new LinkedBlockingQueue[Seq[DesignPoint]](5000)
-//        val keysQueue = new LinkedBlockingQueue[(Int, Seq[String])](5000)
-//        val doneQueue = new LinkedBlockingQueue[Boolean](20)
-//        val optimalQueue = new LinkedBlockingQueue[Network](20)
-//        val reqHandler = new Thread(
-//          RequestHandler(
-//            input = reader,
-//            output = requestQueue,
-//            keysOut = keysQueue,
-//            config = config)
-//        )
-//        val program = new Thread(
-//          ProgramRunner(
-//            workDir = workPath.toFile,
-//            binary = binaryProgram,
-//            input = requestQueue,
-//            output = responseQueue,
-//            optimalNetwork = optimalQueue)
-//        )
-//        val respHandler = new Thread(
-//          ResponseHandler(
-//            output = writer,
-//            input = responseQueue,
-//            keysIn = keysQueue,
-//            doneQueue = doneQueue)
-//        )
-//
-//        reqHandler.start()
-//        program.start()
-//        respHandler.start()
-//
-//        doneQueue.take()
-//        println("Optimisation finished!")
-//        val optimalPoint = optimalQueue.take()
-//        println("Saving optimal results")
-//
-//        model.Configuration.write(
-//          configDir = config.outputDir,
-//          network = Network(optimalPoint.name + "_" + cores + "_optimal", optimalPoint.actors)
-//        )
-
-//      }
     }
 
   }

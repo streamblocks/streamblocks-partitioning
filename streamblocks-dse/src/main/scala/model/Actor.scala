@@ -4,7 +4,7 @@ import hypermapper.{HMAsymmetricPartitionParam, HMParam, HMSymmetricPartitionPar
 
 
 
-case class Network(name: String, actors: Seq[Actor], index: Option[HMSymmetricPartitionParam] = None)
+case class Network(name: String, actors: Seq[Actor], index: Option[Seq[HMSymmetricPartitionParam]] = None)
 
 case class Actor(name: String, partition: HMParam)
 

@@ -8,12 +8,12 @@ abstract class DesignObjective {
 case class InfeasibleObjective() extends DesignObjective {
   override def getObjective: Double = Double.MaxValue
 }
-case class FeasibleObjective(execTime: Double, util: Int) extends DesignObjective {
+case class FeasibleObjective(execTime: Double) extends DesignObjective {
   override def getObjective: Double = execTime
 }
 
 object DesignObjective {
-  def apply(execTime: Double, util: Int) = new FeasibleObjective(execTime, util)
+  def apply(execTime: Double) = new FeasibleObjective(execTime)
   def apply() = new InfeasibleObjective()
 }
 
@@ -22,17 +22,17 @@ case class DesignPoint(params: Seq[HMParam], objective: DesignObjective)
 object DesignPoint {
 
 
-  def apply(network: Network, execTime: Double, util: Int): DesignPoint = network.index match {
+  def apply(network: Network, execTime: Double): DesignPoint = network.index match {
     case None =>
-      new DesignPoint(network.actors.map(_.partition), DesignObjective(execTime, util))
+      new DesignPoint(network.actors.map(_.partition), DesignObjective(execTime))
     case Some(ix) =>
-      new DesignPoint(Seq(ix), DesignObjective(execTime, util))
+      new DesignPoint(ix, DesignObjective(execTime))
   }
   def apply(network: Network): DesignPoint = network.index match {
     case None =>
       DesignPoint(network.actors.map(_.partition), InfeasibleObjective())
     case Some(ix) =>
-      DesignPoint(Seq(ix), InfeasibleObjective())
+      DesignPoint(ix, InfeasibleObjective())
   }
 
 }

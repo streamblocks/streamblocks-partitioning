@@ -19,7 +19,7 @@ case class ResponseHandler(output: BufferedWriter,
         if (n == 0)
           running = false
         else {
-          val keys = (k ++ Seq("exec_time", "num_cores", "Valid")).mkString(",")
+          val keys = (k ++ Seq("exec_time", "Valid")).mkString(",")
           // Write the header
           output.write(keys + "\n")
           println("Response keys are: " + keys)
@@ -31,8 +31,8 @@ case class ResponseHandler(output: BufferedWriter,
               params.map(_.getValue).mkString(",") + "," + (obj match {
                 case InfeasibleObjective() =>
                   Seq("0.0", "0.0", utils.Constants.HMFalse).mkString(",")
-                case FeasibleObjective(execTime, util) =>
-                  Seq(execTime.toString, util.toString, utils.Constants.HMTrue).mkString(",")
+                case FeasibleObjective(execTime) =>
+                  Seq(execTime.toString, utils.Constants.HMTrue).mkString(",")
               })
           }
           respStrings foreach { pts =>

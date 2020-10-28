@@ -1,27 +1,14 @@
 package hypermapper
 
+import scala.:+
+import scala.math._
+import scala.util.Random
 sealed trait HMParamType {
   def getTypeString: String
   override def toString: String = getTypeString
   def getRange: String
-}
-
-case class HMIntegerParamType private (value: Int, range:(Int, Int)) extends  HMParamType {
-  def getTypeString: String = "integer"
-  def getRange: String = "[" + range._1 + ", " + range._2 + "]"
-  def toInt: Int = value
-  def maxValue = range._2
-  def minValue: Int = range._1
-
-  def matchRange(that: HMIntegerParamType): Boolean = this.minValue == that.minValue && this.maxValue == that.maxValue
-  def increment: HMIntegerParamType =
-    if (this.toInt + 1 > this.maxValue)
-      HMIntegerParamType(this.minValue, this.range)
-    else
-      HMIntegerParamType(this.toInt + 1, this.range)
 
 }
-
 
 case class HMIntegerType[T] private (value: T, range: (T, T)) extends HMParamType {
   def getTypeString: String = "integer"
@@ -29,32 +16,13 @@ case class HMIntegerType[T] private (value: T, range: (T, T)) extends HMParamTyp
   def maxValue = range._2
   def getRange: String = "[" + minValue.toString + ", " + maxValue.toString + "]"
 }
-object HMIntegerParamType {
 
-  def apply(value: Int, range: (Int, Int)): HMIntegerParamType = {
-    if (value > range._2 || value < range._1)
-      throw new RuntimeException("Value" + value + " out of range(" + range._1 + ", " + range._2 + ")")
-    else
-      new HMIntegerParamType(value, range)
-
-  }
-
-}
 
 
 sealed trait HMParam {
   def toString: String
   def getType: HMParamType
   def getValue: String
-
-}
-
-case class HMPartitionParam(name: String, affinity: Int, numCores: Int) extends HMParam {
-
-  override def toString: String = name
-  override def getType: HMIntegerParamType = HMIntegerParamType(affinity, (0, numCores))
-
-  override def getValue: String = affinity.toString
 
 }
 
@@ -71,6 +39,70 @@ case class HMSymmetricPartitionParam(name: String, value: BigInt, size: BigInt) 
 
   override def getValue: String = value.toString
 
+}
+
+object HMSymmetricPartitionParam {
+
+  implicit class ExtendedBigInt(v: BigInt) {
+    def sqrt: BigInt = BigInt(v.bigInteger.sqrt())
+    def biCompose: (BigInt, BigInt) = {
+      def loop(ix: BigInt): (BigInt, BigInt) = {
+        if (ix == 1) {
+          (ix, v)
+        } else {
+          if (v % ix == 0) {
+            (v / ix, ix)
+          } else {
+            loop(ix - 1)
+          }
+        }
+      }
+      loop(v.sqrt)
+    }
+
+    def ployCompose(threshold: Int): Seq[Int] = {
+
+      def checkAndBreak(bigValue: BigInt): Seq[Int] = {
+        if (bigValue > BigInt(threshold)) {
+          val (d1, d2) = bigValue.biCompose
+          if (d2 == bigValue)
+            throw new RuntimeException("Failed breaking BigInt")
+          else {
+            checkAndBreak(d1) ++ checkAndBreak(d2)
+          }
+        } else {
+          Seq(bigValue.toInt)
+        }
+      }
+      checkAndBreak(v)
+    }
+
+
+    def polyComposeApprox(threshold: Int): (Seq[Int], BigDecimal) = {
+
+      def checkAndBreak(bigValue: BigInt): Seq[Int] = {
+        if (bigValue > BigInt(threshold)) {
+          checkAndBreak(bigValue.sqrt) ++ checkAndBreak(bigValue.sqrt)
+        } else {
+          Seq(bigValue.toInt)
+        }
+      }
+      val chunks = checkAndBreak(v)
+      val approx = chunks.map(BigInt(_)).reduce(_*_)
+      val error = BigDecimal(v - approx) / BigDecimal(v) * 100.0
+      (chunks, error)
+    }
+  }
+
+
+  def chunked(name: String, size: BigInt, random: Boolean = false): Seq[HMSymmetricPartitionParam] = {
+    val (approxDivisors: Seq[Int], _) = size.polyComposeApprox(utils.Constants.HM_VALUE_THRESHOLD)
+    def generateParam(sizeSeq: Seq[Int], index: Int): Seq[HMSymmetricPartitionParam] = sizeSeq match {
+      case Seq() => Seq()
+      case sz :: tail => HMSymmetricPartitionParam(name + "_" + index, if (random) Random.nextInt(sz) else 0, sz) +: generateParam(tail, index + 1)
+    }
+    generateParam(approxDivisors, 0)
+  }
 }
 
 
