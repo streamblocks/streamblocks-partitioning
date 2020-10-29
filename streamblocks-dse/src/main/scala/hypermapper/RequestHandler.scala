@@ -47,6 +47,7 @@ case class RequestHandler(input: BufferedReader,
                 case(actor, affinity) =>
                   Actor(actor.name, affinity, config.numCores)
               },
+              connections = Seq(),
               index = Some(recvParams)
             )
 
