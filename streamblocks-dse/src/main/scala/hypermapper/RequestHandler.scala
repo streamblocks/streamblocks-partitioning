@@ -53,13 +53,13 @@ case class RequestHandler(input: BufferedReader,
 
           } else {
             val typedValues: Seq[Int] = values.map(v => v.toInt)
-            Network(
-              name = config.network.name,
-              actors = (keys zip typedValues) map {
+            config.network withActors {
+              (keys zip typedValues) map {
                 case (name, affinity) =>
                   Actor(name, affinity, config.numCores)
               }
-            )
+            }
+
           }
           network +: generateNetworks(ix - 1)
         }

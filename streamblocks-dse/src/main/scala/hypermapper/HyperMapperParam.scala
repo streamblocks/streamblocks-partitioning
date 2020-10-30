@@ -12,13 +12,20 @@ sealed trait HMParamType {
 
 case class HMIntegerType[T] private (value: T, range: (T, T)) extends HMParamType {
   def getTypeString: String = "integer"
-  def minValue = range._1
-  def maxValue = range._2
+  def minValue: T = range._1
+  def maxValue: T = range._2
   def getRange: String = "[" + minValue.toString + ", " + maxValue.toString + "]"
 }
 
 
+case object HMEmptyType extends HMParamType {
+  override def getRange: String = "None"
 
+  override def getTypeString: String = "None"
+
+  override def toString: String = "None"
+
+}
 sealed trait HMParam {
   def toString: String
   def getType: HMParamType
@@ -39,6 +46,11 @@ case class HMSymmetricPartitionParam(name: String, value: BigInt, size: BigInt) 
 
   override def getValue: String = value.toString
 
+}
+
+case object HMEmptyParam extends HMParam {
+  override def getType: HMParamType = HMEmptyType
+  override def getValue: String = "None"
 }
 
 object HMSymmetricPartitionParam {

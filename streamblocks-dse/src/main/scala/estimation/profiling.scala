@@ -12,23 +12,23 @@ import scala.xml.XML
 case class BandwidthInfo(intraCore: Long, interCore: Long)
 case class ConnectionInfo(tokens: Long, tokenSize: Int, bufferSize: Int)
 
-class CommonProfileDataBase(val profilePath: Path, val systemProfilePath: Path, val network: Network) {
+case class CommonProfileDataBase(profilePath: Path, systemProfilePath: Path, network: Network) {
 
 
   if (!Files.exists(profilePath)) {
     throw new RuntimeException(s"file ${profilePath.toAbsolutePath} does not exist")
   }
 
-  val xmlFile = XML.loadFile(profilePath.toFile)
+  private val xmlFile = XML.loadFile(profilePath.toFile)
 
-  val networkName = (xmlFile \ "network").map(_.attribute("id")).head
+
 
   private val execDb: Map[Actor, Long] = (xmlFile \\ "instance").map {
     node =>
-      val actorName = node.attribute("id")
+      val actorName: String = node.attribute("id")
         .getOrElse(throw new RuntimeException("actor id not specified")).toString
       val actor: Actor =
-        network.actors.find(_.name == actorName).getOrElse(s"Could not find actor ${actorName} in the network")
+        network.actors.filter(a => a.name == actorName).head
       val ticks = node.attribute("complexity")
         .getOrElse(throw new RuntimeException("actor ticks (complexity) not specified")).toString.toLong
       actor-> ticks
@@ -68,7 +68,7 @@ class CommonProfileDataBase(val profilePath: Path, val systemProfilePath: Path, 
     throw new RuntimeException(s"file ${systemProfilePath.toAbsolutePath} does not exist")
   }
 
-  val systemXmlFile = XML.loadFile(systemProfilePath.toFile)
+  private val systemXmlFile = XML.loadFile(systemProfilePath.toFile)
 
   def systemDbParser: String => Map[Long, Long] = testType => {
     (systemXmlFile \\ "bandwidth-test").filter { test =>
@@ -118,8 +118,5 @@ class CommonProfileDataBase(val profilePath: Path, val systemProfilePath: Path, 
     (numTransfers * ticksPerTransfer.intraCore, numTransfers * ticksPerTransfer.interCore)
   }
 
-
-}
-object profiling {
 
 }

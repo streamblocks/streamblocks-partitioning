@@ -140,7 +140,8 @@ object Generator {
 
     val network = Network(
       name = networkName,
-      actors = softwareActors ++ hardwareActors
+      actors = softwareActors ++ hardwareActors,
+      connections = Seq()
     )
 
     Configuration.write(outputFile, network)

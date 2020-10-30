@@ -60,7 +60,7 @@ object Main {
 
       val options = CLIOptions.parseArgs(args)
       val configFileName: String = options.getOrElse(CLIOptions.ConfigFile,
-        throw new RuntimeException("utils.Config file name not specified"))
+        throw new RuntimeException("Config file name not specified"))
       val numCores = options.getOrElse(CLIOptions.NumCores,
         throw new RuntimeException("Number of cores not specified")).toInt
       val outputDir = options.getOrElse(CLIOptions.OutputDir,
@@ -69,13 +69,12 @@ object Main {
         throw new RuntimeException("Binary not specified"))
       val workDir = options.getOrElse(CLIOptions.WorkDir,
         throw new RuntimeException("Work directory not specified"))
-      val configXml = XML.loadFile(configFileName)
+
 
       val symmetricAnalysis = if (options.getOrElse(CLIOptions.Symmetric, "false") == "false") false else true
 
       val configFile = new File(configFileName)
-      if (!configFile.exists)
-        throw new RuntimeException("utils.Config file name does not exists")
+
       val outputPath = Paths.get(outputDir).toAbsolutePath
       if (!Files.exists(outputPath))
         Files.createDirectory(outputPath)
@@ -86,36 +85,31 @@ object Main {
       if (!Files.exists(workPath))
         Files.createDirectory(workPath)
 
-      println("Parsing config file")
-      val networkName = (configXml \ "network").map(_.attribute("id")).head
-        .getOrElse(throw new RuntimeException("Could not get the network name")).toString
 
-      val instances = (configXml \\ "instance").map(_.attribute("id"))
-        .map(_.getOrElse(throw new RuntimeException("encountered instance with no id")))
 
-      val (n, m) = (120, 20)
+      val baseNetwork = Network.fromXcf(configFile)
 
 
       val dseTable = if (symmetricAnalysis) {
         println("Generating Stirling DSE table...")
-        Option(utils.StirlingTable(instances.length))
+        Option(utils.StirlingTable(baseNetwork.actors.length))
       } else {
         Option.empty
       }
 
-      val actorList = instances.map(_.toString).toList
-
-      for (cores <- 2 to Seq(numCores, instances.length).min) {
 
 
+      for (cores <- 2 to Seq(numCores, baseNetwork.actors.length).min) {
 
-        val network =  Network(networkName, actorList.map(actor => Actor(actor, 0, cores)))
+
+
+        val network =  baseNetwork withCores cores
 
 
         val dseSize = dseTable.get(network.actors.length, cores)
 
         val jsonConfig = HyperMapperConfig(
-            appName = networkName + "_" + cores + (if (symmetricAnalysis) "_sym" else ""),
+            appName = network.name + "_" + cores + (if (symmetricAnalysis) "_sym" else ""),
             numIter = utils.Constants.HMIterations,
             doe = utils.Constants.HMDOE,
             dseParams =
@@ -136,7 +130,7 @@ object Main {
           stirlingTable = dseTable,
           jsonConf = jsonConfig
         )
-        println(s"Starting optimization with ${instances.length} actors ${cores} and cores (symmetric = ${symmetricAnalysis}, dse size = ${dseSize})")
+        println(s"Starting optimization with ${network.actors.length} actors ${cores} and cores (symmetric = ${symmetricAnalysis}, dse size = ${dseSize})")
 
         val jsonFile = jsonConfig.emitJson(config.outputDir)
 
@@ -185,7 +179,7 @@ object Main {
 
         model.Configuration.write(
           configDir = config.outputDir,
-          network = Network(optimalPoint.name + "_" + cores + "_optimal", optimalPoint.actors)
+          network = baseNetwork withName (optimalPoint.name + "_" + cores + "_optimal") withActors optimalPoint.actors
         )
       }
 

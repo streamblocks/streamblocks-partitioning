@@ -1,21 +1,33 @@
 package estimation
 
-import model.Network
+import java.io.File
+import java.nio.file.Paths
+
+import model.{Actor, Network}
+
+import scala.util.Random
 
 
 sealed trait LiteralType{
 
   def identityValue: LiteralType
+  def getValue: AnyVal
 }
 
 case class IntegerLiteral(value: Long) extends LiteralType {
   override def identityValue: LiteralType = IntegerLiteral(1)
+
+  override def getValue: Long = value
 }
 case class DoubleLiteral(value: Double) extends LiteralType {
   override def identityValue: LiteralType = DoubleLiteral(1.0)
+
+  override def getValue: Double = value
 }
 case class BooleanLiteral(value: Boolean) extends LiteralType {
   override def identityValue: LiteralType = BooleanLiteral(true)
+
+  override def getValue: Boolean = value
 }
 
 
@@ -124,7 +136,18 @@ object Formula {
     case Lit(_) => formula
   }
   def evaluate(formula: Formula): Formula = formula match {
-    case Expression(_, _) => evaluate(formula)
+    case Expression(op, args) =>
+      val evaluatedArgs = args.map(evaluate)
+      val allLiterals = evaluatedArgs.forall(a => a match {
+        case Lit(_) => true
+        case _ => false
+      })
+      if (allLiterals) {
+        val cArgs = evaluatedArgs.map(_.asInstanceOf[Lit].value.l)
+        val foldedVal = constantEvaluator(op, cArgs)
+        Lit(Literal(foldedVal))
+      } else
+        formula
     case If(cond, thn, els) =>
       evaluate(cond) match {
         case Lit(l) => l.l match {
@@ -136,21 +159,7 @@ object Formula {
     case Lit(_) => formula
     case Var(_) => formula
   }
-  def evaluate(expr: Expression): Formula = {
-    val op = expr.op
-    val args = expr.args
-    val evaluatedArgs = args.map(evaluate)
-    val allLiterals = evaluatedArgs.forall(a => a match {
-      case Lit(_) => true
-      case _ => false
-    })
-    if (allLiterals) {
-      val cArgs = evaluatedArgs.map(_.asInstanceOf[Lit].value.l)
-      val foldedVal = constantEvaluator(op, cArgs)
-      Lit(Literal(foldedVal))
-    } else
-      expr
-  }
+
 
   lazy val constantEvaluator: PartialFunction[(Operator, Seq[LiteralType]), LiteralType] = {
     case (AddOperator, Seq(x: IntegerLiteral, y: IntegerLiteral)) => IntegerLiteral(x.value  + y.value)
@@ -175,17 +184,22 @@ object modeling {
 
   def main(args: Array[String]): Unit = {
 
-    val v1 = Variable("v1")
-    val v2 = Variable("v2")
-    val l1 = Literal(IntegerLiteral(1))
-    val l2 = Literal(IntegerLiteral(2))
 
-    val expr: Expression = Formula.Max(Seq((v1 + l1) + (v2 + l2)))
-    val constExpr = Formula.substitute(expr)(Map("v1" -> 1, "v2" -> 2))
-    val value = Formula.evaluate(constExpr)
 
-    val tmp = 1
+    val baseNetwork = Network.fromXcf(new File("tmp/rvc.xcf"))
 
+    val profileDb = CommonProfileDataBase(
+      Paths.get("tmp/multicore-profile.xml"),
+      Paths.get("tmp/system-profile.xml"),
+      baseNetwork)
+
+    val perfModel = PerformanceEstimator(profileDb, baseNetwork, 2)
+
+    val network = baseNetwork withActors baseNetwork.actors.map(actor => Actor(actor.name, Random.nextInt(2), 2))
+
+    val t = perfModel.estimate(network)
+
+    println(t / 2.4e9 + "s")
   }
 
 

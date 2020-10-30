@@ -6,17 +6,17 @@ import model.{Actor, Network}
 
 
 
-case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network, config: utils.Config) {
+case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network, numCores: Int) {
 
 
   // The growth variables represent a restricted growth sequence that model the core assignments
-  private val growthVariables = network.actors.map(a => a -> Variable(a.name)).toMap
+  private val growthVariables = network.actors.map(a => a.name -> Variable(a.name)).toMap
 
   // formulate each core communication time
   private def partitionExecutionTimeFormula(p: Int): Formula = {
     val terms = {
-      val decisionVars: Seq[Formula] = growthVariables.map { case (a: Actor, v: Variable) =>
-        val w: Lit = Lit(Literal(IntegerLiteral(profDb(a))))
+      val decisionVars: Seq[Formula] = growthVariables.map { case (a: String, v: Variable) =>
+        val w: Lit = Lit(Literal(IntegerLiteral(profDb(findActor(a)))))
         val zero: Lit = Lit(Literal(IntegerLiteral(0)))
         val currentPartition = Literal(IntegerLiteral(p))
         If(currentPartition == v, w, zero)
@@ -47,8 +47,8 @@ case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network,
     val sourceActor = findActor(c.srcActor)
     val destActor = findActor(c.dstActor)
 
-    val sourcePartition = growthVariables(sourceActor)
-    val destPartition = growthVariables(destActor)
+    val sourcePartition = growthVariables(sourceActor.name)
+    val destPartition = growthVariables(destActor.name)
 
     val intraCost = profDb(c) match {case (i, _) => Literal(IntegerLiteral(i))}
     val currentPartition = Literal(IntegerLiteral(p))
@@ -80,8 +80,8 @@ case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network,
         val interCost = profDb(c) match { case (_, i) => Literal(IntegerLiteral(i))}
         val sourceActor = findActor(c.srcActor)
         val targetActor = findActor(c.dstActor)
-        val sourceActorPartition = growthVariables(sourceActor)
-        val targetActorPartition = growthVariables(targetActor)
+        val sourceActorPartition = growthVariables(sourceActor.name)
+        val targetActorPartition = growthVariables(targetActor.name)
         val zero = Lit(Literal(IntegerLiteral(0)))
         If(sourceActorPartition == sourcePartition,
           If(targetActorPartition == targetPartition,
@@ -94,12 +94,12 @@ case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network,
   }
 
 
-  private val coreList = Range(0, config.numCores).toList
+  private val coreList = Range(0, numCores).toList
 
   private val execTime = Formula.Max(coreList.map(partitionExecutionTimeFormula))
   private val localCommTime =  Formula.Max(coreList.map(localCommTimeFormula))
   private val globalCommTime = Formula.Sum {
-    coreList.flatMap(c1 => coreList.map(c2 => (c1, c2))).map{
+    coreList.flatMap(c1 => coreList.map(c2 => (c1, c2))).map {
       case (core1, core2) => globalCommTimeFormula(core1, core2)
     }
   }
@@ -113,7 +113,7 @@ case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network,
       // A map from growth variables to their literal values
       network.actors.map(a => a.partition match {
         case HMAsymmetricPartitionParam(_, value, _) =>
-          growthVariables(a)-> value.toLong
+          growthVariables(a.name)-> value.toLong
         case HMSymmetricPartitionParam(_, _, _) =>
           throw new RuntimeException("Actor partition param should be converted to an AsymmetricPartitionParam")
       }).toMap

@@ -15,7 +15,7 @@ case class ProgramRunner(workDir: File, binary: File,
                          optimalNetwork: BlockingQueue[Network]) extends Runnable {
 
   private var running = true
-  private var optimalFound: (Network, Double) = (Network("null_network", Seq()), Double.MaxValue)
+  private var optimalFound: (Network, Double) = (Network("null_network", Seq(), Seq()), Double.MaxValue)
 
   def execute(network: Network): ProgramStats = {
 
