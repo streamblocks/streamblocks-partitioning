@@ -135,6 +135,7 @@ public class PartitioningAnalysisPhase implements Phase {
         }
 
     }
+
     @Override
     public CompilationTask execute(CompilationTask task, Context context) throws CompilationException {
 
@@ -157,28 +158,34 @@ public class PartitioningAnalysisPhase implements Phase {
         }
         this.multicoreDB = multicoreParser.getDataBase();
         this.accelDB = devParser.getDataBase();
-        Long startTime = System.currentTimeMillis();
+        int maxCores = context.getConfiguration().get(PartitionSettings.cpuCoreCount);
 
-        ImmutableList<Map<String, List<Instance>>> solutions = solveModel(task, context);
-        Long elapsedTime = System.currentTimeMillis() - startTime;
-        System.out.printf("Found solution in %d ms.\n", elapsedTime);
-        int id = 0;
-        for(Map<String, List<Instance>> partitions: solutions) {
+        for (int cores = 2; cores <= maxCores; cores++) {
 
-            try {
-                model.set(GRB.IntParam.SolutionNumber, id);
-                Double estimated_time = model.getVarByName("T").get(GRB.DoubleAttr.Xn) * 1e-6;
-                System.out.printf("Solution %d (%f ms)\n", id, estimated_time);
-                reportPartition(partitions);
-                printTimingBreakdown(id);
-                createConfig(partitions, context, id);
-                id++;
-            } catch (GRBException e) {
-                e.printStackTrace();
+            Long startTime = System.currentTimeMillis();
+
+            ImmutableList<Map<String, List<Instance>>> solutions = solveModel(task, context, cores);
+            Long elapsedTime = System.currentTimeMillis() - startTime;
+            System.out.printf("Found solution in %d ms.\n", elapsedTime);
+            int id = 0;
+            for(Map<String, List<Instance>> partitions: solutions) {
+
+                try {
+                    model.set(GRB.IntParam.SolutionNumber, id);
+                    Double estimated_time = model.getVarByName("T").get(GRB.DoubleAttr.Xn) * 1e-6;
+                    System.out.printf("Solution %d (%f ms)\n", id, estimated_time);
+                    reportPartition(partitions);
+                    printTimingBreakdown(id);
+                    createConfig(partitions, context, id, cores);
+                    id++;
+                } catch (GRBException e) {
+                    e.printStackTrace();
+                }
+
             }
 
-
         }
+
         return task;
     }
 
@@ -232,31 +239,34 @@ public class PartitioningAnalysisPhase implements Phase {
     private String getMulticorePartitionId(String partition) {
         return partition.substring(5);
     }
-    private void createConfig(Map<String, List<Instance>> partitions, Context context, int pid) {
+    private void createConfig(Map<String, List<Instance>> partitions, Context context, int pid, int coreCount) {
+
+//        int numberOfCores= context.getConfiguration().get(PartitionSettings.cpuCoreCount);
 
         Path configPath =
             context.getConfiguration().isDefined(PartitionSettings.configPath) ?
                 context.getConfiguration().get(PartitionSettings.configPath) :
-                    context.getConfiguration().get(Compiler.targetPath).resolve("bin/config_" + pid + ".xml");
+                    context.getConfiguration().get(Compiler.targetPath).resolve("bin/config_" +
+                            coreCount + "_" + pid + ".xml");
 
         try {
             // the config xml doc
             Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().newDocument();
-            Element configRoot = doc.createElement("Configuration");
+            Element configRoot = doc.createElement("configuration");
             doc.appendChild(configRoot);
-            Element partitioningRoot = doc.createElement("Partitioning");
+            Element partitioningRoot = doc.createElement("partitioning");
             configRoot.appendChild(partitioningRoot);
             Integer id = 0;
             for (String partition: partitions.keySet()) {
                 List<Instance> instances = partitions.get(partition);
                 if (!instances.isEmpty()) {
 
-                    Element partitionRoot = doc.createElement("Partition");
+                    Element partitionRoot = doc.createElement("partition");
 
                     partitionRoot.setAttribute("id", id.toString());
                     instances.forEach( instance -> {
-                        Element instanceRoot = doc.createElement("Instance");
-                        instanceRoot.setAttribute("actor-id", instance.getInstanceName());
+                        Element instanceRoot = doc.createElement("instance");
+                        instanceRoot.setAttribute("id", instance.getInstanceName());
                         partitionRoot.appendChild(instanceRoot);
                     });
                     partitioningRoot.appendChild(partitionRoot);
@@ -315,11 +325,14 @@ public class PartitioningAnalysisPhase implements Phase {
 
 
     }
-    private ImmutableList<Map<String, List<Instance>>> solveModel(CompilationTask task, Context context) {
+    private ImmutableList<Map<String, List<Instance>>> solveModel(CompilationTask task, Context context,
+                                                                  int numberOfCores) {
         Network network = task.getNetwork();
         printStatistics();
         try {
 
+            context.getReporter().report(new Diagnostic(Diagnostic.Kind.INFO,
+                    "Solving performance model for " + numberOfCores));
             GRBEnv env = new GRBEnv(true);
             Path logPath = context.getConfiguration().get(Compiler.targetPath);
             Path logfile = logPath.resolve("partitions.log");
@@ -334,11 +347,13 @@ public class PartitioningAnalysisPhase implements Phase {
 
             model = new GRBModel(env);
 
+            model.set(GRB.DoubleParam.TimeLimit, 300.0);
+
             // create the objective expression
             GRBLinExpr objectiveExpr = new GRBLinExpr();
 
 
-            int numberOfCores = context.getConfiguration().get(PartitionSettings.cpuCoreCount);
+//            int numberOfCores = context.getConfiguration().get(PartitionSettings.cpuCoreCount);
             if (numberOfCores < 1) {
                 throw new CompilationException(
                         new Diagnostic(Diagnostic.Kind.ERROR, String.format("Invalid number of cores %d, " +
@@ -861,6 +876,7 @@ public class PartitioningAnalysisPhase implements Phase {
             }
 
 
+
             objectiveExpr.addTerm(1.0, T_network);
             objectiveExpr.addTerm(1.0, T_lc);
             objectiveExpr.addTerm(1.0, T_cc);
@@ -868,7 +884,31 @@ public class PartitioningAnalysisPhase implements Phase {
             if (T_ca.isPresent())
                 objectiveExpr.addTerm(1.0, T_ca.get());
 
+
             GRBVar T = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS, "T");
+
+
+            // Symmetry breaking constraints, only works for homogeneous partitions for now
+//            if (!T_ca.isPresent()) {
+//
+//                for(Instance inst: network.getInstances()) {
+//
+//                    // Restricted growth character
+//                    GRBVar a_i = model.addVar(0.0, numberOfCores - 1, 0.0,
+//                            GRB.INTEGER, "a_" + inst.getInstanceName());
+//                    for(String p: PminusAccel) {
+//                        GRBVar b_p_i = instanceVariables.get(inst).get(p);
+//                        // We want to say that b_p_i -> a_i == p
+//                        double partitionAsDouble = Integer.valueOf(p.substring(5)).doubleValue();
+//                        GRBLinExpr expr = new GRBLinExpr();
+//                        expr.addTerm(1.0, a_i);
+//                        model.addGenConstrIndicator(b_p_i, 1, expr, GRB.EQUAL, partitionAsDouble,
+//                                "sym_" + p + "_" + inst.getInstanceName());
+//                    }
+//
+//                }
+//            }
+
             model.addConstr(T, GRB.EQUAL, objectiveExpr, "T=..");
 
             model.setObjective(objectiveExpr, GRB.MINIMIZE);

@@ -48,7 +48,7 @@ public class MulticoreProfileParser {
             doc.getDocumentElement().normalize();
 
 
-            NodeList instanceList = doc.getElementsByTagName("Instance");
+            NodeList instanceList = doc.getElementsByTagName("instance");
             for (int instanceId = 0; instanceId < instanceList.getLength(); instanceId ++) {
 
                 Node instNode = instanceList.item(instanceId);
@@ -61,7 +61,7 @@ public class MulticoreProfileParser {
 
             }
 
-            NodeList connectionList = doc.getElementsByTagName("Connection");
+            NodeList connectionList = doc.getElementsByTagName("fifo-connection");
 
             for (int connectionId = 0; connectionId < connectionList.getLength(); connectionId ++) {
                 Node conNode = connectionList.item(connectionId);
@@ -85,7 +85,7 @@ public class MulticoreProfileParser {
             this.state = Status.ParsedBoth;
     }
     private void parseInstance(Element instance, Network network, Context context) {
-        String strippedName = instance.getAttribute("actor-id");
+        String strippedName = instance.getAttribute("id");
         Long complexity = Long.valueOf(instance.getAttribute("complexity"));
 
         network.getInstances().stream().forEach(inst -> {
@@ -103,10 +103,10 @@ public class MulticoreProfileParser {
 
     private void parseConnection(Element connection, Network network, Context context) {
 
-        String source = connection.getAttribute("src");
-        String sourcePort = connection.getAttribute("src-port");
-        String target = connection.getAttribute("dst");
-        String targetPort = connection.getAttribute("dst-port");
+        String source = connection.getAttribute("source");
+        String sourcePort = connection.getAttribute("source-port");
+        String target = connection.getAttribute("target");
+        String targetPort = connection.getAttribute("target-port");
         Long count = Long.valueOf(connection.getAttribute("bandwidth"));
         Integer tokenSize = Integer.valueOf(connection.getAttribute("token-size"));
         Integer depth = Integer.valueOf(connection.getAttribute("size"));
