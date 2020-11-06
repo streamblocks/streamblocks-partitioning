@@ -4,7 +4,7 @@ import java.io.BufferedReader
 import java.util.concurrent.BlockingQueue
 
 import model.{Actor, Network}
-import utils.Config
+import utils.{Config, RuntimeConfig}
 
 import scala.util.Try
 import scala.util.matching.Regex
@@ -12,7 +12,7 @@ import scala.util.matching.Regex
 case class RequestHandler(input: BufferedReader,
                           output: BlockingQueue[Seq[Network]],
                           keysOut: BlockingQueue[(Int, Seq[String])],
-                          config: Config) extends Runnable {
+                          config: RuntimeConfig) extends Runnable {
   private var running: Boolean = true
 
   def flattenedGrowthSequenceIndex(indexSeq: Seq[HMSymmetricPartitionParam]): BigInt = indexSeq match {
@@ -20,7 +20,7 @@ case class RequestHandler(input: BufferedReader,
     case sq@_ =>
       sq.head.value + sq.head.size * flattenedGrowthSequenceIndex(sq.tail)
   }
-  def createNetworks(requestCount: Int) = {
+  private def createNetworks(requestCount: Int): Unit = {
     val keys = input.readLine().split(",").map(_.trim)
     keysOut.put((requestCount, keys))
     try {
@@ -29,8 +29,8 @@ case class RequestHandler(input: BufferedReader,
           Seq()
         else {
           val values = input.readLine().split(",").map(_.trim)
-          val network = if (config.symmetric) {
-            val definedParams = config.jsonConf.dseParams
+          val network = if (config.cliConfig.symmetricAnalysis) {
+            val definedParams = config.hmConfig.dseParams
             assert(values.length == definedParams.length, "json config params and request param mismatch!")
             val recvParams = (keys zip values) map {
               case (name, value) =>

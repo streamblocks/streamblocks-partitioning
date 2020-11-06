@@ -3,7 +3,9 @@ package hypermapper
 import java.io.{File, PrintWriter}
 import java.nio.file.Paths
 
-case class HyperMapperConfig(appName : String, numIter: Integer, doe: Integer,
+import utils.CLIConfig
+
+case class HyperMapperConfig(appName : String, cliConfig: CLIConfig,
                              dseParams: Seq[HMParam]) {
 
   def emitJson(outputDir: File) = {
@@ -18,7 +20,7 @@ case class HyperMapperConfig(appName : String, numIter: Integer, doe: Integer,
          |  "application_name": "${appName}",
          |  "design_of_experiment" : {
          |    "doe_type": "standard latin hypercube",
-         |    "number_of_samples": ${doe}
+         |    "number_of_samples": ${cliConfig.hyperMapperSettings("number_of_samples")}
          |  },
          |  "feasible_output" : {
          |    "enable_feasible_predictor": true,
@@ -45,9 +47,9 @@ case class HyperMapperConfig(appName : String, numIter: Integer, doe: Integer,
          |  "log_file": "${outputDir}/${appName}.log",
          |  "models": {
          |    "model": "random_forest",
-         |    "number_of_trees": 100
+         |    "number_of_trees": ${cliConfig.hyperMapperSettings("number_of_trees")}
          |  },
-         |  "optimization_iterations": ${numIter},
+         |  "optimization_iterations": ${cliConfig.hyperMapperSettings("optimization_iterations")},
          |  "optimization_objectives": [
          |    "exec_time"
          |  ],

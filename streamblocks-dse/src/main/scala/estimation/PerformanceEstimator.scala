@@ -6,7 +6,7 @@ import model.{Actor, Network}
 
 
 
-case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network, numCores: Int) {
+case class PerformanceEstimator(profDb: ProfileDB, network: Network, numCores: Int) {
 
 
   // The growth variables represent a restricted growth sequence that model the core assignments
@@ -15,12 +15,14 @@ case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network,
   // formulate each core communication time
   private def partitionExecutionTimeFormula(p: Int): Formula = {
     val terms = {
-      val decisionVars: Seq[Formula] = growthVariables.map { case (a: String, v: Variable) =>
-        val w: Lit = Lit(Literal(IntegerLiteral(profDb(findActor(a)))))
+
+      val decisionVars: Seq[Formula] = network.actors.map{ a =>
+        val v = growthVariables(a.name)
+        val w: Lit = Lit(Literal(DoubleLiteral(profDb(a)(ProfileDB.ProfileType.SW))))
         val zero: Lit = Lit(Literal(IntegerLiteral(0)))
         val currentPartition = Literal(IntegerLiteral(p))
         If(currentPartition == v, w, zero)
-      }.toSeq
+      }
       decisionVars
     }
     // Each partition execution time is the sum of individual actor execution times on that partition,
@@ -50,10 +52,10 @@ case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network,
     val sourcePartition = growthVariables(sourceActor.name)
     val destPartition = growthVariables(destActor.name)
 
-    val intraCost = profDb(c) match {case (i, _) => Literal(IntegerLiteral(i))}
+    val intraCost = profDb(c) match {case (i, _) => Literal(DoubleLiteral(i))}
     val currentPartition = Literal(IntegerLiteral(p))
 
-    val zero = Lit(Literal(IntegerLiteral(0)))
+    val zero = Lit(Literal(DoubleLiteral(0)))
 
     If(sourcePartition == destPartition,
       If(sourcePartition == currentPartition, Lit(intraCost),zero), zero)
@@ -77,12 +79,12 @@ case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network,
 
       Formula.Sum(network.connections.map {c =>
 
-        val interCost = profDb(c) match { case (_, i) => Literal(IntegerLiteral(i))}
+        val interCost = profDb(c) match { case (_, i) => Literal(DoubleLiteral(i))}
         val sourceActor = findActor(c.srcActor)
         val targetActor = findActor(c.dstActor)
         val sourceActorPartition = growthVariables(sourceActor.name)
         val targetActorPartition = growthVariables(targetActor.name)
-        val zero = Lit(Literal(IntegerLiteral(0)))
+        val zero = Lit(Literal(DoubleLiteral(0)))
         If(sourceActorPartition == sourcePartition,
           If(targetActorPartition == targetPartition,
             Lit(interCost),
@@ -109,7 +111,22 @@ case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network,
   private val totalTime = Formula.Max(Seq(execTime, localCommTime, globalCommTime))
 
   def estimate(network: Network): Double = {
-    val substFormula = Formula.substitute(totalTime){
+    estimate(network, totalTime)
+  }
+
+  def estimateByComponent(network: Network): Map[String, Double] = {
+    val Texec = estimate(network, execTime)
+    val Tlc = estimate(network, localCommTime)
+    val Tcc = estimate(network, globalCommTime)
+    Map(
+      "T_exec" -> Texec,
+      "T_lc" -> Tlc,
+      "T_cc" -> Tcc
+    )
+  }
+
+  private def estimate(network: Network, formula: Formula): Double = {
+    val substFormula = Formula.substitute(formula) {
       // A map from growth variables to their literal values
       network.actors.map(a => a.partition match {
         case HMAsymmetricPartitionParam(_, value, _) =>
@@ -118,17 +135,31 @@ case class PerformanceEstimator(profDb: CommonProfileDataBase, network: Network,
           throw new RuntimeException("Actor partition param should be converted to an AsymmetricPartitionParam")
       }).toMap
     }
-
     val foldedFormula: LiteralType = Formula.evaluate(substFormula) match {
       case Lit(l) => l.l
       case _ => throw new RuntimeException("Could not evaluate the formula!")
     }
-
     foldedFormula match {
       case DoubleLiteral(d) => d
       case IntegerLiteral(i) => i.toDouble
       case BooleanLiteral(b) => throw new RuntimeException("Error evaluating the formula!")
     }
+  }
+
+  def reportProfile = {
+
+    println(f"actor\t\t\t\t\t\tsoftware\t\thardware")
+
+    network.actors.foreach{actor =>
+      println(f"${actor.name}%20s\t\t\t\t" +
+        f"${profDb(actor)(ProfileDB.ProfileType.SW) * 1e-9}%2.6f\t\t${profDb(actor)(ProfileDB.ProfileType.HW) * 1e-9}%2.6f")
+    }
+    val hwTime = network.actors.map(profDb(_)(ProfileDB.ProfileType.HW)).sum * 1e-9
+    val swTime = network.actors.map(profDb(_)(ProfileDB.ProfileType.SW)).sum * 1e-9
+    println(f"\t\t\t\t\t\t\t${swTime}%2.6f\t\t${hwTime}%2.6f")
+
+
+
   }
 
 }

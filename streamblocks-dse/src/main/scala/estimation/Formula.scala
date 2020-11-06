@@ -12,6 +12,13 @@ sealed trait LiteralType{
 
   def identityValue: LiteralType
   def getValue: AnyVal
+
+  def toDoubleLiteral: DoubleLiteral = this match {
+    case IntegerLiteral(x) => DoubleLiteral(x)
+    case t@DoubleLiteral(_) => t
+    case BooleanLiteral(x) => DoubleLiteral(if (x == true) 1.0 else 0.0)
+  }
+
 }
 
 case class IntegerLiteral(value: Long) extends LiteralType {
@@ -32,7 +39,7 @@ case class BooleanLiteral(value: Boolean) extends LiteralType {
 
 
 
-case class Variable(name: String, coeff: Option[LiteralType] = None) {
+case class Variable(name: String) {
 
   def + (that: Variable) = Expression(AddOperator, Seq(Var(this), Var(that)))
   def + (that: Literal) = Expression(AddOperator, Seq(Var(this), Lit(that)))
@@ -144,6 +151,7 @@ object Formula {
       })
       if (allLiterals) {
         val cArgs = evaluatedArgs.map(_.asInstanceOf[Lit].value.l)
+        val homoArgs = makeHomomorphic(cArgs)
         val foldedVal = constantEvaluator(op, cArgs)
         Lit(Literal(foldedVal))
       } else
@@ -168,41 +176,57 @@ object Formula {
     case (SubOperator, Seq(x: DoubleLiteral, y: DoubleLiteral)) => DoubleLiteral(x.value + y.value)
     case (MultiplyOperator, Seq(x: IntegerLiteral, y: IntegerLiteral)) => IntegerLiteral(x.value + y.value)
     case (MultiplyOperator, Seq(x: DoubleLiteral, y: DoubleLiteral)) => DoubleLiteral(x.value + y.value)
-    case (MaxOperator, xs: Seq[IntegerLiteral]) => xs.maxBy(_.value)
-    case (MaxOperator, xs: Seq[DoubleLiteral]) => xs.maxBy(_.value)
-    case (SumOperator, xs: Seq[IntegerLiteral]) => IntegerLiteral(xs.map(_.value).sum)
-    case (SumOperator, xs: Seq[DoubleLiteral]) => DoubleLiteral(xs.map(_.value).sum)
+    case (MaxOperator, xs) =>
+      xs.map(_.toDoubleLiteral).maxBy(_.value)
+    case (SumOperator, xs) =>
+      DoubleLiteral(xs.map(_.toDoubleLiteral.value).sum)
     case (EqualityOperator, Seq(x: IntegerLiteral, y: IntegerLiteral)) => BooleanLiteral(x.value == y.value)
     case (EqualityOperator, Seq(x: DoubleLiteral, y: DoubleLiteral)) => BooleanLiteral(x.value == y.value)
     case (EqualityOperator, Seq(x:BooleanLiteral, y: BooleanLiteral)) => BooleanLiteral(x.value == y.value)
     case _ => throw new RuntimeException("Unsupported constants evaluation")
   }
 
-}
+  private def makeHomomorphic(values: Seq[LiteralType]): Seq[LiteralType] = {
+    val allIntegers = values.forall(_ match {
+      case IntegerLiteral(x) => true
+      case DoubleLiteral(x) => false
+      case BooleanLiteral(x) => false
+    })
+    val allBoolean = values.forall(_ match {
+      case BooleanLiteral(x) => true
+      case DoubleLiteral(_) => false
+      case IntegerLiteral(_) => false
+    })
 
-object modeling {
+    if (allIntegers || allBoolean)
+      values
+    else
+      values.map(_.toDoubleLiteral)
 
-  def main(args: Array[String]): Unit = {
-
-
-
-    val baseNetwork = Network.fromXcf(new File("tmp/rvc.xcf"))
-
-    val profileDb = CommonProfileDataBase(
-      Paths.get("tmp/multicore-profile.xml"),
-      Paths.get("tmp/system-profile.xml"),
-      baseNetwork)
-
-    val perfModel = PerformanceEstimator(profileDb, baseNetwork, 2)
-
-    val network = baseNetwork withActors baseNetwork.actors.map(actor => Actor(actor.name, Random.nextInt(2), 2))
-
-    val t = perfModel.estimate(network)
-
-    println(t / 2.4e9 + "s")
   }
 
-
-
-
 }
+
+//object modeling {
+//
+//  def main(args: Array[String]): Unit = {
+//
+//    val baseNetwork = Network.fromXcf(new File("tmp/configuration.xcf"))
+//
+//    val profileDb = ProfileDB(
+//      network = baseNetwork,
+//      multicoreProfilePath = Paths.get("tmp/multicore-profile.xml"),
+//      systemProfilePath = Paths.get("tmp/system-profile.xml"),
+//      multicoreClock = 1.0 / 2.4)
+//
+//    val perfModel = PerformanceEstimator(profileDb, baseNetwork, 2)
+//    perfModel.reportProfile
+//    val network = baseNetwork withActors baseNetwork.actors.map(actor => Actor(actor.name, Random.nextInt(2), 2))
+//
+//    val t = perfModel.estimate(network)
+//
+//    println(t + "s")
+//
+//  }
+//
+//}

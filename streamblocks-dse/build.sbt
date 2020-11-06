@@ -25,7 +25,8 @@ version := "1.0"
 // You can define other libraries as dependencies in your build like this:
 
 libraryDependencies ++= Seq(
-  "org.scala-lang.modules" %% "scala-xml" % "1.3.0")
+  "org.scala-lang.modules" %% "scala-xml" % "1.3.0",
+  "com.github.scopt" %% "scopt" % "3.7.1")
 //libraryDependencies += "scala.xml" % "2.13.3"
 // Here, `libraryDependencies` is a set of dependencies, and by using `+=`,
 // we're adding the scala-parser-combinators dependency to the set of dependencies

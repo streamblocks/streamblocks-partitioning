@@ -7,19 +7,16 @@ import model.{Actor, Connection, Network}
 
 import scala.xml.XML
 
+case class MulticoreProfile(profilePath: File, systemProfilePath: File, network: Network) {
 
+  case class BandwidthInfo(intraCore: Long, interCore: Long)
+  case class ConnectionInfo(tokens: Long, tokenSize: Int, bufferSize: Int)
 
-case class BandwidthInfo(intraCore: Long, interCore: Long)
-case class ConnectionInfo(tokens: Long, tokenSize: Int, bufferSize: Int)
-
-case class CommonProfileDataBase(profilePath: Path, systemProfilePath: Path, network: Network) {
-
-
-  if (!Files.exists(profilePath)) {
-    throw new RuntimeException(s"file ${profilePath.toAbsolutePath} does not exist")
+  if (!profilePath.exists()){
+    throw new RuntimeException(s"file ${profilePath.toPath.toAbsolutePath} does not exist")
   }
 
-  private val xmlFile = XML.loadFile(profilePath.toFile)
+  private val xmlFile = XML.loadFile(profilePath)
 
 
 
@@ -35,15 +32,15 @@ case class CommonProfileDataBase(profilePath: Path, systemProfilePath: Path, net
 
   }.toMap
 
-  private val commDb: Map[Connection, ConnectionInfo] = (xmlFile \\ "connection").map {
+  private val commDb: Map[Connection, ConnectionInfo] = (xmlFile \\ "fifo-connection").map {
     node =>
-      val srcPort = node.attribute("src-port")
+      val srcPort = node.attribute("source-port")
         .getOrElse(throw new RuntimeException("Connection source port not specified")).toString
-      val srcActor = node.attribute("src")
+      val srcActor = node.attribute("source")
         .getOrElse(throw new RuntimeException("Connection source actor not specified")).toString
-      val dstPort = node.attribute("dst-port")
+      val dstPort = node.attribute("target-port")
         .getOrElse(throw new RuntimeException("Connection destination port not specified")).toString
-      val dstActor = node.attribute("dst")
+      val dstActor = node.attribute("target")
         .getOrElse(throw new RuntimeException("Connection source actor not specified")).toString
 
       val c = Connection(srcActor, srcPort, dstActor, dstPort)
@@ -64,11 +61,11 @@ case class CommonProfileDataBase(profilePath: Path, systemProfilePath: Path, net
 
   }.toMap
 
-  if (!Files.exists(systemProfilePath)) {
-    throw new RuntimeException(s"file ${systemProfilePath.toAbsolutePath} does not exist")
+  if (!systemProfilePath.exists()) {
+    throw new RuntimeException(s"file ${systemProfilePath.toPath.toAbsolutePath} does not exist")
   }
 
-  private val systemXmlFile = XML.loadFile(systemProfilePath.toFile)
+  private val systemXmlFile = XML.loadFile(systemProfilePath)
 
   def systemDbParser: String => Map[Long, Long] = testType => {
     (systemXmlFile \\ "bandwidth-test").filter { test =>
@@ -101,8 +98,8 @@ case class CommonProfileDataBase(profilePath: Path, systemProfilePath: Path, net
 
 
 
-  def apply(actor: Actor) = execDb(actor)
-  def apply(con : Connection)  = {
+  def apply(actor: Actor): Long = execDb(actor)
+  def apply(con : Connection): (Long, Long)  = {
     val (tokens, bufferSize, tokenSize) = commDb(con) match {case ConnectionInfo(t, b, s) => (t, b, s)}
 
     val bufferBytes = bufferSize * tokenSize
@@ -118,5 +115,9 @@ case class CommonProfileDataBase(profilePath: Path, systemProfilePath: Path, net
     (numTransfers * ticksPerTransfer.intraCore, numTransfers * ticksPerTransfer.interCore)
   }
 
-
 }
+
+
+
+
+

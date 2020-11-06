@@ -37,6 +37,7 @@ object Network {
       val sourcePort = n.attribute("source-port").getOrElse("could not get source port").toString
       val targetActor = n.attribute("target").getOrElse("could not get target actor").toString
       val targetPort = n.attribute("target-port").getOrElse("could not get target port").toString
+
       Connection(srcActor = sourceActor, srcPort = sourcePort, dstActor = targetActor, dstPort = targetPort)
     }
 

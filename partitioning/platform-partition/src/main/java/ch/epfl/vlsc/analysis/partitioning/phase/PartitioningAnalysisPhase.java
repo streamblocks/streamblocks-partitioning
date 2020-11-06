@@ -209,7 +209,6 @@ public class PartitioningAnalysisPhase implements Phase {
 
         }
 
-
     }
 
     private Double getVarByName(String name) throws GRBException {
@@ -347,7 +346,7 @@ public class PartitioningAnalysisPhase implements Phase {
 
             model = new GRBModel(env);
 
-            model.set(GRB.DoubleParam.TimeLimit, 300.0);
+            model.set(GRB.DoubleParam.TimeLimit, 600.0);
 
             // create the objective expression
             GRBLinExpr objectiveExpr = new GRBLinExpr();
@@ -889,25 +888,65 @@ public class PartitioningAnalysisPhase implements Phase {
 
 
             // Symmetry breaking constraints, only works for homogeneous partitions for now
-//            if (!T_ca.isPresent()) {
-//
-//                for(Instance inst: network.getInstances()) {
-//
-//                    // Restricted growth character
-//                    GRBVar a_i = model.addVar(0.0, numberOfCores - 1, 0.0,
-//                            GRB.INTEGER, "a_" + inst.getInstanceName());
-//                    for(String p: PminusAccel) {
-//                        GRBVar b_p_i = instanceVariables.get(inst).get(p);
-//                        // We want to say that b_p_i -> a_i == p
-//                        double partitionAsDouble = Integer.valueOf(p.substring(5)).doubleValue();
-//                        GRBLinExpr expr = new GRBLinExpr();
-//                        expr.addTerm(1.0, a_i);
-//                        model.addGenConstrIndicator(b_p_i, 1, expr, GRB.EQUAL, partitionAsDouble,
-//                                "sym_" + p + "_" + inst.getInstanceName());
-//                    }
-//
-//                }
-//            }
+            if (!T_ca.isPresent()) {
+
+                List<GRBVar> restrictedGrowthString = new ArrayList();
+                for(Instance inst: network.getInstances()) {
+
+                    // Restricted growth character
+                    GRBVar a_i = model.addVar(0.0, numberOfCores - 1, 0.0,
+                            GRB.INTEGER, "a_" + inst.getInstanceName());
+                    for(String p: PminusAccel) {
+                        GRBVar b_p_i = instanceVariables.get(inst).get(p);
+                        // We want to say that b_p_i -> a_i == p
+                        double partitionAsDouble = Integer.valueOf(p.substring(5)).doubleValue();
+                        GRBLinExpr expr = new GRBLinExpr();
+                        expr.addTerm(1.0, a_i);
+                        model.addGenConstrIndicator(b_p_i, 1, expr, GRB.EQUAL, partitionAsDouble,
+                                "sym_" + p + "_" + inst.getInstanceName());
+                    }
+
+                    restrictedGrowthString.add(a_i);
+                }
+
+                // restricted growth constraints
+                // a_0 = 0
+                GRBVar a_0 = restrictedGrowthString.get(0);
+                model.addConstr(a_0, GRB.EQUAL, 0.0, "a_0=0");
+
+                for (int ix = 1; ix < restrictedGrowthString.size(); ix++) {
+
+                    GRBVar a_i = restrictedGrowthString.get(ix);
+                    GRBVar maxPrefix = model.addVar(0.0, numberOfCores - 1, 0.0,
+                            GRB.INTEGER, "max(a_0..,a_" + (ix - 1) + ")");
+                    GRBLinExpr maxExpr = new GRBLinExpr();
+                    List<GRBVar> maxTerms = restrictedGrowthString.subList(0, ix);
+                    GRBVar[] maxTermsArray = maxTerms.toArray(new GRBVar[maxTerms.size()]);
+
+                    model.addGenConstrMax(maxPrefix, maxTermsArray, 0.0,
+                            "max(a_0,..,a_" + (ix - 1) + ")");
+
+                    maxExpr.addConstant(1.0);
+                    maxExpr.addTerm(1.0, maxPrefix);
+
+                    // a_i <= 1 + max(a_0, ..., a_(i-1))
+                    model.addConstr(a_i, GRB.LESS_EQUAL, maxExpr,
+                            "a_" + ix + "<=" + "1+max(a_0,..,a_" + (ix - 1) + ")");
+
+                }
+
+                // Constraint the formulas to use all the available cores
+                GRBVar num_cores_utilized = model.addVar(0.0, numberOfCores - 1, 0.0,
+                        GRB.INTEGER, "num_cores_utilized");
+                GRBVar[] growthStringAsArray =
+                        restrictedGrowthString.toArray(new GRBVar[restrictedGrowthString.size()]);
+                model.addGenConstrMax(num_cores_utilized, growthStringAsArray, 0.0,
+                        "num_cores_utilized=max(a_0,...,a_" + (restrictedGrowthString.size() - 1) + ")");
+                model.addConstr(num_cores_utilized, GRB.EQUAL, numberOfCores - 1,
+                        "num_cores_utilized=" + numberOfCores);
+
+            }
+
 
             model.addConstr(T, GRB.EQUAL, objectiveExpr, "T=..");
 
