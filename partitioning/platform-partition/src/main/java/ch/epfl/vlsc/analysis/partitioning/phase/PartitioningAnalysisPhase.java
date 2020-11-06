@@ -30,6 +30,9 @@ import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
 import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileWriter;
+import java.io.PrintWriter;
 import java.net.Inet4Address;
 import java.nio.file.Path;
 import java.util.*;
@@ -168,28 +171,54 @@ public class PartitioningAnalysisPhase implements Phase {
             Long elapsedTime = System.currentTimeMillis() - startTime;
             System.out.printf("Found solution in %d ms.\n", elapsedTime);
             int id = 0;
-            for(Map<String, List<Instance>> partitions: solutions) {
 
-                try {
-                    model.set(GRB.IntParam.SolutionNumber, id);
-                    Double estimated_time = model.getVarByName("T").get(GRB.DoubleAttr.Xn) * 1e-6;
-                    System.out.printf("Solution %d (%f ms)\n", id, estimated_time);
-                    reportPartition(partitions);
-                    printTimingBreakdown(id);
-                    createConfig(partitions, context, id, cores);
-                    id++;
-                } catch (GRBException e) {
-                    e.printStackTrace();
+            Path dumpPath =
+                    context.getConfiguration().isDefined(PartitionSettings.configPath) ?
+                            context.getConfiguration().get(PartitionSettings.configPath) :
+                            context.getConfiguration().get(Compiler.targetPath).resolve("bin/" + cores);
+
+
+            File dumpDir = new File(dumpPath.toUri());
+
+            if (!dumpDir.exists())
+                dumpDir.mkdirs();
+
+            File dumpFile = new File(dumpDir + "/solutions.csv");
+
+            try {
+                PrintWriter solutionWriter = new PrintWriter(dumpFile);
+                solutionWriter.println("T,T_network,T_lc,T_cc,T_ca,T_plink_kernel,T_plink_read,T_plink_write");
+                for (Map<String, List<Instance>> partitions : solutions) {
+
+                    try {
+                        model.set(GRB.IntParam.SolutionNumber, id);
+                        Double estimated_time = model.getVarByName("T").get(GRB.DoubleAttr.Xn) * 1e-6;
+                        System.out.printf("Solution %d (%f ms)\n", id, estimated_time);
+                        reportPartition(partitions);
+
+                        printTimingBreakdown(id, solutionWriter);
+                        createConfig(partitions, context, id, cores);
+                        id++;
+                    } catch (GRBException e) {
+                        context.getReporter().report(new Diagnostic(Diagnostic.Kind.ERROR, "Could not get solution " + id));
+                        e.printStackTrace();
+                    }
+
                 }
-
+                solutionWriter.close();
+            } catch (FileNotFoundException e) {
+                context.getReporter().report(new Diagnostic(Diagnostic.Kind.ERROR, "Could not create file " + dumpFile.toString()));
             }
-
         }
+
+
+
+
 
         return task;
     }
 
-    private void printTimingBreakdown(int id) throws GRBException{
+    private void printTimingBreakdown(int id, PrintWriter writer) throws GRBException{
 
         Double T_total = getVarByName("T");
         Double T_network = getVarByName("T_network");
@@ -199,23 +228,25 @@ public class PartitioningAnalysisPhase implements Phase {
         printVar("T_network");
         printVar("T_lc");
         printVar("T_cc");
+        writer.print(getVarByName("T") + "," + getVarByName("T_network") + "," + getVarByName("T_lc") + "," + getVarByName("T_cc") + ",");
         if (this.definedSystemCProfilePath && this.definedOclProfilePath) {
 
-//            printVar("T_la");
             printVar("T_ca");
             printVar("t_plink_kernel");
             printVar("t_plink_read");
             printVar("t_plink_write");
-
+            writer.print(getVarByName("T_ca") + "," + getVarByName("t_plink_kernel") + "," + getVarByName("t_plink_read") + "," + getVarByName("t_plink_write") + "\n");
+        } else {
+            writer.print("0.0,0.0,0.0,0.0\n");
         }
 
     }
 
     private Double getVarByName(String name) throws GRBException {
-        return model.getVarByName(name).get(GRB.DoubleAttr.Xn) * 1e-6;
+        return model.getVarByName(name).get(GRB.DoubleAttr.Xn) * 1e-9;
     }
     private void printVar(String name, Double value) {
-        System.out.printf("%s = %6.6f ms\n", name, value);
+        System.out.printf("%s = %6.6f s\n", name, value);
     }
     private void printVar(String name) throws GRBException{
         printVar(name, getVarByName(name));
@@ -245,8 +276,12 @@ public class PartitioningAnalysisPhase implements Phase {
         Path configPath =
             context.getConfiguration().isDefined(PartitionSettings.configPath) ?
                 context.getConfiguration().get(PartitionSettings.configPath) :
-                    context.getConfiguration().get(Compiler.targetPath).resolve("bin/config_" +
-                            coreCount + "_" + pid + ".xml");
+                    context.getConfiguration().get(Compiler.targetPath).resolve("bin/" + coreCount);
+        File configDir = new File(configPath.toUri());
+
+        if (!configDir.exists()) {
+            configDir.mkdirs();
+        }
 
         try {
             // the config xml doc
@@ -273,7 +308,7 @@ public class PartitioningAnalysisPhase implements Phase {
                 }
             }
 
-            StreamResult configStream = new StreamResult(new File(configPath.toUri()));
+            StreamResult configStream = new StreamResult(new File(configDir + "/config_" + pid + ".xml"));
             DOMSource configDom = new DOMSource(doc);
             Transformer configTransformer = TransformerFactory.newInstance().newTransformer();
             configTransformer.setOutputProperty(OutputKeys.INDENT, "yes");
