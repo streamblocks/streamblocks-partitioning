@@ -108,8 +108,8 @@ public class MulticoreProfileDataBase extends CommonProfileDataBase{
         }
         try {
             CommonProfileDataBase.CommunicationTicks ticksPerTx = getCommunicationTicks(nextProfiledBufferSizeBytes);
-            Long tokensExchanged = this.getTokensExchanged(connection);
-            Double numTx = tokensExchanged.doubleValue() / nextProfiledBufferSizeBytes.doubleValue();
+            Long bytesExchanged = this.getBytesExchanged(connection);
+            Double numTx = bytesExchanged.doubleValue() / nextProfiledBufferSizeBytes.doubleValue();
             return numTx * ticksPerTx.get(kind);
 
         } catch (CompilationException e) {
@@ -141,6 +141,9 @@ public class MulticoreProfileDataBase extends CommonProfileDataBase{
         return this.tokenDb.get(connection);
     }
 
+    public Long getBytesExchanged(Connection connection) {
+        return this.getTokensExchanged(connection) * this.getSettings(connection).getWidth();
+    }
     public void setSettings(Connection connection, ConnectionSettings settings) {
         this.auxDb.set(connection, settings);
     }

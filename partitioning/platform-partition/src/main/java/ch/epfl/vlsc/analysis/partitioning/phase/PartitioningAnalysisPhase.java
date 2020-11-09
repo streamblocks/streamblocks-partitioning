@@ -47,7 +47,7 @@ public class PartitioningAnalysisPhase implements Phase {
 
     Double multicoreClockPeriod; // in NS
     Double accelClockPeriod; // in NS
-
+    Double timeLimit;
 
     boolean definedMulticoreProfilePath;
     boolean definedSystemCProfilePath;
@@ -60,14 +60,15 @@ public class PartitioningAnalysisPhase implements Phase {
     GRBModel model;
     public PartitioningAnalysisPhase() {
         this.multicoreDB = null;
-        this.multicoreClockPeriod = 1.0 / 3.4; // 3.4 GHz
+        this.multicoreClockPeriod = 1.0 / 3.4 * 1e-9; // 3.4 GHz
         this.accelDB = null;
-        this.accelClockPeriod = 1.0 / .185; // 280 MHz
+        this.accelClockPeriod = 1.0 / .185 * 1e-9; // 280 MHz
         this.definedCoreCommProfilePath = false;
         this.definedOclProfilePath = false;
         this.definedSystemCProfilePath = false;
         this.definedMulticoreProfilePath = false;
 
+        this.timeLimit = 300.0;
 
         this.plinkPartition = "core_0";
         this.accelPartition = "accel";
@@ -169,7 +170,7 @@ public class PartitioningAnalysisPhase implements Phase {
 
             ImmutableList<Map<String, List<Instance>>> solutions = solveModel(task, context, cores);
             Long elapsedTime = System.currentTimeMillis() - startTime;
-            System.out.printf("Found solution in %d ms.\n", elapsedTime);
+            System.out.printf("Found solution in %d s.\n", elapsedTime);
             int id = 0;
 
             Path dumpPath =
@@ -192,8 +193,8 @@ public class PartitioningAnalysisPhase implements Phase {
 
                     try {
                         model.set(GRB.IntParam.SolutionNumber, id);
-                        Double estimated_time = model.getVarByName("T").get(GRB.DoubleAttr.Xn) * 1e-6;
-                        System.out.printf("Solution %d (%f ms)\n", id, estimated_time);
+                        Double estimated_time = model.getVarByName("T").get(GRB.DoubleAttr.Xn);
+                        System.out.printf("Solution %d (%f s)\n", id, estimated_time);
                         reportPartition(partitions);
 
                         printTimingBreakdown(id, solutionWriter);
@@ -243,7 +244,7 @@ public class PartitioningAnalysisPhase implements Phase {
     }
 
     private Double getVarByName(String name) throws GRBException {
-        return model.getVarByName(name).get(GRB.DoubleAttr.Xn) * 1e-9;
+        return model.getVarByName(name).get(GRB.DoubleAttr.Xn);
     }
     private void printVar(String name, Double value) {
         System.out.printf("%s = %6.6f s\n", name, value);
@@ -352,8 +353,8 @@ public class PartitioningAnalysisPhase implements Phase {
         System.out.println("Actor execution stats:\t\tSoftware\t\tHardware (ms)");
 
         for (Instance instance: this.task.getNetwork().getInstances()) {
-            Double sw = this.multicoreDB.getInstanceTicks(instance) * this.multicoreClockPeriod * 1e-6;
-            Double hw = this.accelDB.getInstanceTicks(instance) * this.accelClockPeriod * 1e-6;
+            Double sw = this.multicoreDB.getInstanceTicks(instance) * this.multicoreClockPeriod * 1e3;
+            Double hw = this.accelDB.getInstanceTicks(instance) * this.accelClockPeriod * 1e3;
             System.out.printf("%20s:\t\t%06.4f\t\t%06.4f\t\t(ms)\n",instance.getInstanceName(), sw, hw);
         }
 
@@ -381,7 +382,7 @@ public class PartitioningAnalysisPhase implements Phase {
 
             model = new GRBModel(env);
 
-            model.set(GRB.DoubleParam.TimeLimit, 600.0);
+            model.set(GRB.DoubleParam.TimeLimit, this.timeLimit);
 
             // create the objective expression
             GRBLinExpr objectiveExpr = new GRBLinExpr();
