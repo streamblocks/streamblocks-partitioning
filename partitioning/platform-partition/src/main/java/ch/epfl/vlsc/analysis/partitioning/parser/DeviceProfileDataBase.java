@@ -69,7 +69,7 @@ public class DeviceProfileDataBase extends CommonProfileDataBase{
      * @param bufferSize the size of the buffer in bytes
      * @return
      */
-    public Double getPCIeReadTime(Long bufferSize, Long tokensExchanged) {
+    public Double getPCIeReadTime(Long bufferSize, Long byteExchanged) {
 
         PCIeTicks data = getPCIeTicks(bufferSize);
         Double outputStageTicks = data.getKernelTicks().doubleValue() / 2.0;
@@ -77,19 +77,19 @@ public class DeviceProfileDataBase extends CommonProfileDataBase{
         Double readTicks = data.getReadTicks().doubleValue();
         outputStageTicks = Double.valueOf(0);
         Double averageTime = (outputStageTicks + readSizeTicks + readTicks) / data.getRepeats().doubleValue();
-        Double numTransfers = tokensExchanged.doubleValue() / bufferSize.doubleValue();
+        Double numTransfers = byteExchanged.doubleValue() / bufferSize.doubleValue();
 
         return averageTime * numTransfers;
     }
 
-    public Double getPCIeWriteTime(Long bufferSize, Long tokensExchanged) {
+    public Double getPCIeWriteTime(Long bufferSize, Long byteExchanged) {
         PCIeTicks data = getPCIeTicks(bufferSize);
         Double inputStageTicks = data.kernelTicks.doubleValue() / 2.0;
         Double writeTicks = data.getWriteTicks().doubleValue();
         inputStageTicks = Double.valueOf(0);
 
         Double averageTime = (inputStageTicks + writeTicks) / data.getRepeats().doubleValue();
-        Double numTransfers = tokensExchanged.doubleValue() / bufferSize.doubleValue();
+        Double numTransfers = byteExchanged.doubleValue() / bufferSize.doubleValue();
         return averageTime * numTransfers;
     }
 

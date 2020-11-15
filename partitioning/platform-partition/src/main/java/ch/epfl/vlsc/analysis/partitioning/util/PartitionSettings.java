@@ -1,9 +1,6 @@
 package ch.epfl.vlsc.analysis.partitioning.util;
 
-import se.lth.cs.tycho.settings.Configuration;
-import se.lth.cs.tycho.settings.IntegerSetting;
-import se.lth.cs.tycho.settings.OnOffSetting;
-import se.lth.cs.tycho.settings.PathSetting;
+import se.lth.cs.tycho.settings.*;
 
 import java.nio.file.Path;
 
@@ -114,6 +111,31 @@ public class PartitionSettings {
     };
 
 
+    public enum Mode {
+        HOMOGENEOUS,
+        HETEROGENEOUS,
+        PINNED_HETEROGENEOUS
 
+    }
+
+
+    public static EnumSetting<Mode> searchMode = new EnumSetting<Mode>(Mode.class) {
+        @Override
+        public String getKey() {
+            return "search-mode";
+        }
+
+        @Override
+        public String getDescription() {
+            return "Type of the search to be performed, homogenous multicore search, " +
+                    "heterogeneous search, or pinned heterogeneous search";
+        }
+
+        @Override
+        public Mode defaultValue(Configuration configuration) {
+            return Mode.HOMOGENEOUS;
+        }
+
+    };
 
 }

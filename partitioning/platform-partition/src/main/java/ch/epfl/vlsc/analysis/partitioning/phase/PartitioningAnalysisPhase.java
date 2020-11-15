@@ -1,5 +1,6 @@
 package ch.epfl.vlsc.analysis.partitioning.phase;
 
+import ch.epfl.vlsc.analysis.partitioning.models.PinnedHardwareModel;
 import ch.epfl.vlsc.analysis.partitioning.parser.*;
 import ch.epfl.vlsc.analysis.partitioning.util.PartitionSettings;
 
@@ -87,7 +88,8 @@ public class PartitioningAnalysisPhase implements Phase {
                 PartitionSettings.openCLProfilePath,
                 PartitionSettings.multicoreCommunicationProfilePath,
                 PartitionSettings.configPath,
-                PartitionSettings.cpuCoreCount);
+                PartitionSettings.cpuCoreCount,
+                PartitionSettings.searchMode);
     }
 
     private void getRequiredSettings(CompilationTask task, Context context) throws CompilationException {
@@ -164,53 +166,59 @@ public class PartitioningAnalysisPhase implements Phase {
         this.accelDB = devParser.getDataBase();
         int maxCores = context.getConfiguration().get(PartitionSettings.cpuCoreCount);
 
-        for (int cores = 2; cores <= maxCores; cores++) {
+        PinnedHardwareModel perfModel = new PinnedHardwareModel(
+                task, context, multicoreDB, accelDB, multicoreClockPeriod, accelClockPeriod, 300.0
+        );
 
-            Long startTime = System.currentTimeMillis();
+        perfModel.solveModel(maxCores);
 
-            ImmutableList<Map<String, List<Instance>>> solutions = solveModel(task, context, cores);
-            Long elapsedTime = System.currentTimeMillis() - startTime;
-            System.out.printf("Found solution in %d s.\n", elapsedTime);
-            int id = 0;
-
-            Path dumpPath =
-                    context.getConfiguration().isDefined(PartitionSettings.configPath) ?
-                            context.getConfiguration().get(PartitionSettings.configPath) :
-                            context.getConfiguration().get(Compiler.targetPath).resolve("bin/" + cores);
-
-
-            File dumpDir = new File(dumpPath.toUri());
-
-            if (!dumpDir.exists())
-                dumpDir.mkdirs();
-
-            File dumpFile = new File(dumpDir + "/solutions.csv");
-
-            try {
-                PrintWriter solutionWriter = new PrintWriter(dumpFile);
-                solutionWriter.println("T,T_network,T_lc,T_cc,T_ca,T_plink_kernel,T_plink_read,T_plink_write");
-                for (Map<String, List<Instance>> partitions : solutions) {
-
-                    try {
-                        model.set(GRB.IntParam.SolutionNumber, id);
-                        Double estimated_time = model.getVarByName("T").get(GRB.DoubleAttr.Xn);
-                        System.out.printf("Solution %d (%f s)\n", id, estimated_time);
-                        reportPartition(partitions);
-
-                        printTimingBreakdown(id, solutionWriter);
-                        createConfig(partitions, context, id, cores);
-                        id++;
-                    } catch (GRBException e) {
-                        context.getReporter().report(new Diagnostic(Diagnostic.Kind.ERROR, "Could not get solution " + id));
-                        e.printStackTrace();
-                    }
-
-                }
-                solutionWriter.close();
-            } catch (FileNotFoundException e) {
-                context.getReporter().report(new Diagnostic(Diagnostic.Kind.ERROR, "Could not create file " + dumpFile.toString()));
-            }
-        }
+//        for (int cores = 2; cores <= maxCores; cores++) {
+//
+//            Long startTime = System.currentTimeMillis();
+//
+//            ImmutableList<Map<String, List<Instance>>> solutions = solveModel(task, context, cores);
+//            Long elapsedTime = System.currentTimeMillis() - startTime;
+//            System.out.printf("Found solution in %d s.\n", elapsedTime);
+//            int id = 0;
+//
+//            Path dumpPath =
+//                    context.getConfiguration().isDefined(PartitionSettings.configPath) ?
+//                            context.getConfiguration().get(PartitionSettings.configPath) :
+//                            context.getConfiguration().get(Compiler.targetPath).resolve("bin/" + cores);
+//
+//
+//            File dumpDir = new File(dumpPath.toUri());
+//
+//            if (!dumpDir.exists())
+//                dumpDir.mkdirs();
+//
+//            File dumpFile = new File(dumpDir + "/solutions.csv");
+//
+//            try {
+//                PrintWriter solutionWriter = new PrintWriter(dumpFile);
+//                solutionWriter.println("T,T_network,T_lc,T_cc,T_ca,T_plink_kernel,T_plink_read,T_plink_write");
+//                for (Map<String, List<Instance>> partitions : solutions) {
+//
+//                    try {
+//                        model.set(GRB.IntParam.SolutionNumber, id);
+//                        Double estimated_time = model.getVarByName("T").get(GRB.DoubleAttr.Xn);
+//                        System.out.printf("Solution %d (%f s)\n", id, estimated_time);
+//                        reportPartition(partitions);
+//
+//                        printTimingBreakdown(id, solutionWriter);
+//                        createConfig(partitions, context, id, cores);
+//                        id++;
+//                    } catch (GRBException e) {
+//                        context.getReporter().report(new Diagnostic(Diagnostic.Kind.ERROR, "Could not get solution " + id));
+//                        e.printStackTrace();
+//                    }
+//
+//                }
+//                solutionWriter.close();
+//            } catch (FileNotFoundException e) {
+//                context.getReporter().report(new Diagnostic(Diagnostic.Kind.ERROR, "Could not create file " + dumpFile.toString()));
+//            }
+//        }
 
 
 
@@ -577,8 +585,8 @@ public class PartitioningAnalysisPhase implements Phase {
                             String.format("b^{~%s,%s}_%s_{accel}=(1-b_%1$s_accel)b_%2$s_accel",
                                     l.getInstanceName(), k.getInstanceName(), getConnectionName(c)));
                     Long bufferSize = Long.valueOf(this.multicoreDB.getConnectionBytes(c));
-                    Long tokens = this.multicoreDB.getTokensExchanged(c);
-                    Double txTime = this.accelDB.getPCIeWriteTime(bufferSize, tokens);
+                    Long tokenBytes = this.multicoreDB.getBytesExchanged(c);
+                    Double txTime = this.accelDB.getPCIeWriteTime(bufferSize, tokenBytes);
 
                     System.out.printf("PCIe write for %s: %6.6f ms\n", getConnectionName(c), txTime * 1e-6);
                     writeSumExpr.addTerm(txTime, b_l_accel_neg_and_b_k_accel);
@@ -630,8 +638,8 @@ public class PartitioningAnalysisPhase implements Phase {
                             String.format("b^{%s,~%s}_%s_{accel}=and(...)",
                                     l.getInstanceName(), k.getInstanceName(), getConnectionName(c)));
                     Long bufferSize = Long.valueOf(this.multicoreDB.getConnectionBytes(c));
-                    Long tokens = this.multicoreDB.getTokensExchanged(c);
-                    Double rxTime = this.accelDB.getPCIeReadTime(bufferSize, tokens);
+                    Long tokeBytes = this.multicoreDB.getBytesExchanged(c);
+                    Double rxTime = this.accelDB.getPCIeReadTime(bufferSize, tokeBytes);
                     System.out.printf("PCIe read for %s: %6.6f ms\n", getConnectionName(c), rxTime * 1e-6);
                     readSumExpr.addTerm(rxTime, b_k_accel_neg_and_b_l_accel);
                     upperRxTime += rxTime;

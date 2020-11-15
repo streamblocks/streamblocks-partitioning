@@ -26,6 +26,7 @@ public class PartitioningAnalysisPlatform implements Platform {
             .addAll(Compiler.frontendPhases())
             .addAll(Compiler.networkElaborationPhases())
             .add(new VerilogNameCheckerPhase())
+            .add(new XcfAnnotationPhase())
             .add(new PartitioningAnalysisPhase())
             .build();
 
