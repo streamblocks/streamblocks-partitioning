@@ -1,10 +1,13 @@
 package ch.epfl.vlsc.analysis.partitioning.phase;
 
+import ch.epfl.vlsc.analysis.partitioning.models.MulticorePerformanceModel;
+import ch.epfl.vlsc.analysis.partitioning.models.PerformanceModel;
 import ch.epfl.vlsc.analysis.partitioning.models.PinnedHardwareModel;
 import ch.epfl.vlsc.analysis.partitioning.parser.*;
 import ch.epfl.vlsc.analysis.partitioning.util.PartitionSettings;
 
 import gurobi.*;
+
 import org.w3c.dom.*;
 
 
@@ -34,7 +37,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileWriter;
 import java.io.PrintWriter;
-import java.net.Inet4Address;
+
 import java.nio.file.Path;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -164,13 +167,41 @@ public class PartitioningAnalysisPhase implements Phase {
         }
         this.multicoreDB = multicoreParser.getDataBase();
         this.accelDB = devParser.getDataBase();
+
         int maxCores = context.getConfiguration().get(PartitionSettings.cpuCoreCount);
+
+
 
         PinnedHardwareModel perfModel = new PinnedHardwareModel(
                 task, context, multicoreDB, accelDB, multicoreClockPeriod, accelClockPeriod, 300.0
         );
+//        MulticorePerformanceModel perfModel = new MulticorePerformanceModel(
+//                task, context, multicoreDB, multicoreClockPeriod, 300.0
+//        );
+        Path logPath = context.getConfiguration().get(Compiler.targetPath);
 
-        perfModel.solveModel(maxCores);
+        maxCores = Math.min(perfModel.getMaxPartitions(), maxCores);
+        for (int cores = 2; cores <= maxCores; cores ++) {
+//            printStatistics();
+//            perfModel.reportHardwareConsumptionProductions();
+            System.out.println("Hardware kernel time: " + perfModel.getPlinkKernelCost2() + ", " + perfModel.getPlinkKernelCost());
+            System.out.println("Plink read: " + perfModel.getPlinkReadCost() + ", Plink write: " + perfModel.getPlinkWriteCost());
+            ImmutableList<PerformanceModel.PartitioningSolution<String>> solutions = perfModel.solveModel(cores);
+            File configDir = logPath.resolve(String.valueOf(cores)).toFile();
+            if (!configDir.exists()) {
+                configDir.mkdirs();
+            }
+            System.out.println("Solved the model for " + cores + " cores");
+            perfModel.solutionsSummary(configDir);
+            for (PerformanceModel.PartitioningSolution<String> solution: solutions) {
+
+                perfModel.dumpMulticoreConfig(
+                        configDir + "/config_" + solutions.indexOf(solution) + ".xml",
+                        solution);
+            }
+
+        }
+
 
 //        for (int cores = 2; cores <= maxCores; cores++) {
 //

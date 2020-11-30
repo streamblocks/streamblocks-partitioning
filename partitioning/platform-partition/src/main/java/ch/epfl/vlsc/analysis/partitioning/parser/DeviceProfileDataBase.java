@@ -64,6 +64,17 @@ public class DeviceProfileDataBase extends CommonProfileDataBase{
         pciDb.set(bufferSize, ticks);
     }
 
+    public PCIeTicks getOverEstimation(Double bufferSize) {
+
+        Long bufferSizeUpper = Math.max(
+                (Long.highestOneBit(bufferSize.longValue()) == bufferSize.longValue()) ?
+                bufferSize.longValue() : Long.highestOneBit(bufferSize.longValue()) << 1,
+                getMinimumPCIeBufferSize());
+        PCIeTicks upperTicks = this.pciDb.get(bufferSizeUpper);
+        return upperTicks;
+
+    }
+
     /**
      * Get the estimated time of PCIe transaction in ns
      * @param bufferSize the size of the buffer in bytes
@@ -71,11 +82,11 @@ public class DeviceProfileDataBase extends CommonProfileDataBase{
      */
     public Double getPCIeReadTime(Long bufferSize, Long byteExchanged) {
 
-        PCIeTicks data = getPCIeTicks(bufferSize);
+        PCIeTicks data = getPCIeTicks(bufferSize > byteExchanged ? byteExchanged : bufferSize);
         Double outputStageTicks = data.getKernelTicks().doubleValue() / 2.0;
         Double readSizeTicks = data.getReadSizeTicks().doubleValue();
         Double readTicks = data.getReadTicks().doubleValue();
-        outputStageTicks = Double.valueOf(0);
+//        outputStageTicks = Double.valueOf(0);
         Double averageTime = (outputStageTicks + readSizeTicks + readTicks) / data.getRepeats().doubleValue();
         Double numTransfers = byteExchanged.doubleValue() / bufferSize.doubleValue();
 
@@ -83,10 +94,10 @@ public class DeviceProfileDataBase extends CommonProfileDataBase{
     }
 
     public Double getPCIeWriteTime(Long bufferSize, Long byteExchanged) {
-        PCIeTicks data = getPCIeTicks(bufferSize);
+        PCIeTicks data = getPCIeTicks(bufferSize > byteExchanged ? byteExchanged : bufferSize);
         Double inputStageTicks = data.kernelTicks.doubleValue() / 2.0;
         Double writeTicks = data.getWriteTicks().doubleValue();
-        inputStageTicks = Double.valueOf(0);
+        //inputStageTicks = Double.valueOf(0);
 
         Double averageTime = (inputStageTicks + writeTicks) / data.getRepeats().doubleValue();
         Double numTransfers = byteExchanged.doubleValue() / bufferSize.doubleValue();

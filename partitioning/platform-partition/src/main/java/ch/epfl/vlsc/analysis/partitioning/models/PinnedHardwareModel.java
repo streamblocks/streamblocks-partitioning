@@ -5,11 +5,15 @@ import ch.epfl.vlsc.analysis.partitioning.parser.DeviceProfileDataBase;
 import ch.epfl.vlsc.analysis.partitioning.parser.MulticoreProfileDataBase;
 import ch.epfl.vlsc.compiler.PartitionedCompilationTask;
 
+
 import gurobi.*;
+import se.lth.cs.tycho.attribute.GlobalNames;
 import se.lth.cs.tycho.compiler.CompilationTask;
 import se.lth.cs.tycho.compiler.Context;
 import se.lth.cs.tycho.ir.ToolAttribute;
 import se.lth.cs.tycho.ir.ToolValueAttribute;
+import se.lth.cs.tycho.ir.entity.Entity;
+import se.lth.cs.tycho.ir.entity.PortDecl;
 import se.lth.cs.tycho.ir.expr.ExprLiteral;
 import se.lth.cs.tycho.ir.network.Connection;
 import se.lth.cs.tycho.ir.network.Instance;
@@ -17,11 +21,7 @@ import se.lth.cs.tycho.ir.network.Network;
 import se.lth.cs.tycho.ir.util.ImmutableList;
 import se.lth.cs.tycho.reporting.CompilationException;
 import se.lth.cs.tycho.reporting.Diagnostic;
-import se.lth.cs.tycho.compiler.Compiler;
 
-
-
-import java.nio.file.Path;
 import java.util.*;
 import java.util.List;
 
@@ -29,7 +29,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 
-public class PinnedHardwareModel extends PerformanceModel {
+public class PinnedHardwareModel extends MulticorePerformanceModel {
 
 
     private final MulticoreProfileDataBase multicoreDB;
@@ -45,6 +45,7 @@ public class PinnedHardwareModel extends PerformanceModel {
                                DeviceProfileDataBase accelDB,
                                Double multicoreClockPeriod,
                                Double accelClockPeriod, Double timeLimit) {
+        super(task, context, multicoreDB, multicoreClockPeriod, timeLimit);
         this.multicoreDB = multicoreDB;
         this.accelDB = accelDB;
         this.multicoreClockPeriod = multicoreClockPeriod;
@@ -65,21 +66,11 @@ public class PinnedHardwareModel extends PerformanceModel {
     }
 
 
-    private void info(String message) {
-        context.getReporter().report(
-                new Diagnostic(Diagnostic.Kind.INFO, message)
-        );
+    @Override
+    protected ImmutableList<Instance> getSoftwareActors() {
+        return this.softwareActors;
     }
-    private void error(String message) {
-        context.getReporter().report(
-                new Diagnostic(Diagnostic.Kind.ERROR, message)
-        );
-    }
-    private void fatalError(String message) {
-        throw new CompilationException(new Diagnostic(
-                Diagnostic.Kind.ERROR, message
-        ));
-    }
+
     private PartitionedCompilationTask.PartitionKind getInstancePartitionKind(Instance instance) {
         PartitionedCompilationTask.PartitionKind defaultPartition = PartitionedCompilationTask.PartitionKind.SW;
         ImmutableList<ToolAttribute> pattrs =
@@ -104,18 +95,6 @@ public class PinnedHardwareModel extends PerformanceModel {
         }
     }
 
-    private ImmutableList<SoftwarePartition> makePartitionSet(int numberOfCores) {
-
-        ImmutableList.Builder<SoftwarePartition> builder = ImmutableList.builder();
-
-        for (int i = 0; i < numberOfCores; i++) {
-            builder.add(new SoftwarePartition(i));
-        }
-
-        return builder.build();
-
-    }
-
     /**
      * Creates a unique name for an instance based on the given baseName
      * @param network the network of instances
@@ -131,347 +110,6 @@ public class PinnedHardwareModel extends PerformanceModel {
 
     }
 
-    /**
-     * A class holding decision variables per instance, the constructor
-     */
-    private class DecisionVariables {
-
-        // -- map from partition to the corresponding decision variable
-        private final Map<SoftwarePartition, GRBVar> vars;
-        // -- the partition number variable which is part of the restricted growth string
-        private final GRBVar partitionNumber;
-        private DecisionVariables (Instance instance,
-                                          ImmutableList<SoftwarePartition> partitions,
-                                          GRBModel model) {
-            this.vars = new HashMap<>();
-            int numberOfCores=  partitions.size();
-
-            try {
-
-                partitionNumber = model.addVar(0.0, numberOfCores - 1, 0.0,
-                        GRB.INTEGER, "a_" + instance.getInstanceName());
-
-                for (SoftwarePartition p : partitions) {
-
-                    GRBVar decisionInstancePartition = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
-                            String.format("d_{$s}_{$s}", instance.getInstanceName(), p.toString()));
-                    vars.put(p, decisionInstancePartition);
-                }
-
-            } catch (GRBException e) {
-                throw new CompilationException(
-                        new Diagnostic(Diagnostic.Kind.ERROR,
-                        "Could not build the decision variables for instance " + instance.getInstanceName()));
-
-            }
-        }
-
-        /**
-         * Builds and expression that can be used to constraint and instance to exactly one partition
-         * @return A linear expression that represents the number of times an instance has been assigned
-         * to a partition, to make sure each instance is assigned to exactly one partition, the returned expression
-         * should be constrained to the value 1.0
-         */
-        public GRBLinExpr getUniquePartitionConstraint() {
-            try {
-                GRBLinExpr uniqueDecisionConstraint = new GRBLinExpr();
-                GRBVar[] decisionVars = vars.values().toArray(new GRBVar[vars.values().size()]);
-                double[] coeffs = new double [vars.values().size()];
-                Arrays.fill(coeffs, 1.0);
-                uniqueDecisionConstraint.addTerms(coeffs, decisionVars);
-                return uniqueDecisionConstraint;
-
-            } catch (GRBException e) {
-                error("Could not create unique decision constraint expression");
-            }
-            return new GRBLinExpr();
-        }
-
-        public void getSymmetryBreakingConstraints(Instance instance) {
-
-            try{
-
-                // -- to break the symmetry we need to make sure that
-                // a_i = p  <=>   d_i_p = true
-                // I.e, if the partition index (partitionNumber) is equal to a partition index (i.e. core index) then
-                // the decision variable assigning instance i to partition p is true
-                for (SoftwarePartition p : vars.keySet()) {
-                    GRBVar decisionVariable = vars.get(p);
-                    int partitionAsIndex = p.toIndex();
-                    GRBLinExpr expr = new GRBLinExpr();
-                    expr.addTerm(1.0, partitionNumber);
-                    model.addGenConstrIndicator(decisionVariable, 1, expr, GRB.EQUAL, partitionAsIndex,
-                            "symmetry_breaking_" + instance.getInstanceName() + "_" + p.toString());
-                }
-
-            } catch (GRBException e) {
-                error("Could not build the symmetry breaking constraints");
-            }
-        }
-        public GRBVar getPartitionNumber() {
-            return this.partitionNumber;
-        }
-        public GRBVar getDecisionVariable(SoftwarePartition p) {
-            return this.vars.get(p);
-        }
-    }
-
-
-    /**
-     * This function builds the symmetry breaking and core utilization constraints
-     * @param instanceDecisionVariables
-     * @param numberOfCores number of cores to be used
-     */
-    private void restrictedGrowthConstraint(Map<Instance, DecisionVariables> instanceDecisionVariables,
-                                            int numberOfCores) {
-
-
-        GRBVar firstActorVariable = instanceDecisionVariables.get(softwareActors.get(0)).getPartitionNumber();
-
-        try {
-
-            // -- the first actor can be assigned to either the first or the second core
-            model.addConstr(firstActorVariable, GRB.LESS_EQUAL, 1.0,
-                    "a_" + softwareActors.get(0).getInstanceName() + "_constraint");
-            // -- the rest of the actors follow the restricted growth rule:
-            // a_j <= max(a_1, a_2, ..., a_(j-1)) + 1
-            // which means that between actor a_j can be either assigned to a new core
-            // that no other actor is assigned to or be assigned to one the cores that
-            // have already some actors assigned to them.
-            for (int instIx = 1; instIx < softwareActors.size(); instIx ++) {
-
-                Instance instance = softwareActors.get(instIx);
-                // -- variable a_j
-                GRBVar partitionVariable = instanceDecisionVariables.get(instance).getPartitionNumber();
-                List<GRBVar> previousVariables = softwareActors.subList(0, instIx).stream()
-                        .map(i -> instanceDecisionVariables.get(i).getPartitionNumber()).collect(Collectors.toList());
-                GRBVar[] maxTerms = previousVariables.toArray(new GRBVar[previousVariables.size()]);
-                GRBVar maxPrefix = model.addVar(0.0, numberOfCores - 1, 0.0,
-                        GRB.INTEGER, "max(a_1,..,a_" + (instIx - 1) + ")");
-
-                model.addGenConstrMax(maxPrefix, maxTerms, 0.0,
-                        "a_" + instance.getInstanceName() + "_max_prefix_constraint");
-                GRBLinExpr expr = new GRBLinExpr();
-                expr.addConstant(1.0);
-                expr.addTerm(1.0, maxPrefix);
-
-                // -- finally the constraint a_j <= max(...) + 1.0
-                model.addConstr(partitionVariable, GRB.LESS_EQUAL, expr,
-                        "a_" + instance.getInstanceName() + "_restricted_growth");
-            }
-
-            // -- we also need to add a constraint on the number of cores used to make sure all cores are utilized
-            GRBVar numCoresUsed =  model.addVar(0.0, numberOfCores - 1, 0.0, GRB.INTEGER,
-                    "num_used_cores");
-            List<GRBVar> allVars = softwareActors.stream()
-                    .map(i -> instanceDecisionVariables.get(i).getPartitionNumber()).collect(Collectors.toList());
-            GRBVar[] allVarsArray = allVars.toArray(new GRBVar[allVars.size()]);
-
-            model.addGenConstrMax(numCoresUsed, allVarsArray, 0.0, "max_core_index_constraint");
-            model.addConstr(numCoresUsed, GRB.EQUAL, numberOfCores - 1, "all_cores_used_constrant");
-
-
-        } catch (GRBException e) {
-            error("Could not build the symmetry breaking constraints");
-        }
-
-
-    }
-
-
-
-    /**
-     * Build a symmetric MILP model for performance and solve it
-     * @param numberOfCores
-     */
-    public void solveModel(int numberOfCores) {
-
-        // The full actor network
-        Network network = task.getNetwork();
-
-        String plink = uniquePlinkName(network, "system_plink");
-
-
-        try {
-            info("Starting pinned hardware partitioning on " + numberOfCores + " cores");
-            GRBEnv env = new GRBEnv(true);
-
-            Path logPath = context.getConfiguration().get(Compiler.targetPath).resolve("partitions.log");
-
-            info("Logging into " + logPath.toAbsolutePath().toString());
-
-            env.set("LogFile", logPath.toAbsolutePath().toString());
-
-            env.start();
-
-            this.model = new GRBModel(env);
-
-            model.set(GRB.DoubleParam.TimeLimit, this.timeLimit);
-
-            // -- create the parititions set
-            ImmutableList<SoftwarePartition> partitions = makePartitionSet(numberOfCores);
-
-            // -- declare the decision variables
-            Map<Instance, DecisionVariables> instanceDecisionVariables = softwareActors.stream()
-                    .collect(Collectors.toMap(Function.identity(),
-                            instance -> new DecisionVariables(instance, partitions, model)));
-
-            // -- we need to make sure every actor is mapped to exactly one partition
-            for (Instance inst: instanceDecisionVariables.keySet()) {
-                GRBLinExpr constraint = instanceDecisionVariables.get(inst).getUniquePartitionConstraint();
-                model.addConstr(constraint, GRB.EQUAL, 1.0, inst.getInstanceName() + "_unique_partition");
-
-            }
-            // -- restricted growth and core utilization constraints
-            restrictedGrowthConstraint(instanceDecisionVariables, numberOfCores);
-
-            // -- symmetry breaking constraints
-            for (Instance inst: instanceDecisionVariables.keySet()) {
-                instanceDecisionVariables.get(inst).getSymmetryBreakingConstraints(inst);
-            }
-
-
-            // -- precompute the plink execution cost
-            Double plinkKernelTime = getPlinkKernelCost();
-            // -- precompute plink read and write cost
-            Double plinkReadTime = getPlinkReadCost();
-            Double plinkWriteTime = getPlinkWriteCost();
-
-            // -- we assume the plink is synchronous so the total plink time (which is an actor) is the sum
-            // of the times above
-            Double plinkTime = plinkKernelTime + plinkReadTime + plinkWriteTime;
-
-            // -- Formulate core execution time, note that plink is pinned to the first core
-
-            // -- the upper bound for each partition is simply the sum of all actor execution times on software
-            Double partitionTimeUpperBound = softwareActors.stream().map(
-                    inst -> this.multicoreDB.getInstanceTicks(inst)
-            ).reduce(Long::sum).orElseThrow(
-                    () -> new CompilationException(new Diagnostic(Diagnostic.Kind.ERROR, "Could not" +
-                            " compute partition execution time upper bound"))
-            ).doubleValue() * this.multicoreClockPeriod;
-
-            List<GRBVar> partitionExecutionTimeList = new ArrayList<>();
-            for (SoftwarePartition partition: partitions) {
-
-
-                GRBLinExpr partitionTimeExpression = getPartitionTimeExpression(partition, instanceDecisionVariables);
-                if (partition.toIndex() == 0) {
-                    // -- the plink is pinned to the first partition
-                    partitionTimeExpression.addConstant(plinkTime);
-                }
-                GRBVar partitionExecTime = model.addVar(0.0, partitionTimeUpperBound, 0.0, GRB.CONTINUOUS,
-                        "T_exec_" + partition.toString());
-                // -- set the variable representing the partition time to the sum expression formulated above
-                model.addConstr(partitionExecTime, GRB.EQUAL, partitionTimeExpression,
-                        "T_exec_" + partition.toString() + "_constraint");
-
-                partitionExecutionTimeList.add(partitionExecTime);
-            }
-            GRBVar[] partitionExecutionTimeArray = partitionExecutionTimeList.toArray(
-                    new GRBVar[partitionExecutionTimeList.size()]);
-            GRBVar executionTime = model.addVar(0.0, partitionTimeUpperBound, 0.0, GRB.CONTINUOUS,
-                    "T_exec");
-            model.addGenConstrMax(executionTime, partitionExecutionTimeArray, 0.0, "T_exec_constraints");
-            // -- formulate the intra core communication, i.e., the local communication time on each partition,
-            // note that this excludes the time spent communicating on first core with the plink
-
-            // -- upper bound for local communication time
-            // TODO: make this bound tighter!
-
-            Double localCommunicationTimeUpperBound = network.getConnections().stream().map(
-                    con -> this.multicoreDB.getCommunicationTicks(con,
-                            CommonProfileDataBase.CommunicationTicks.Kind.Local) * this.multicoreClockPeriod
-            ).reduce(Double::sum).orElseThrow(() -> new CompilationException(
-                    new Diagnostic(Diagnostic.Kind.ERROR,
-                            "Could not compute local communication time upper bound")
-            ));
-
-
-            List<GRBVar> localCommunicationTimeList = new ArrayList<>();
-            for (SoftwarePartition partition: partitions) {
-
-                GRBLinExpr localCommunicationTimeExpression = getLocalCoreCommunicationExpression(partition,
-                        instanceDecisionVariables);
-
-                if (partition.toIndex() == 0){
-                    GRBLinExpr plinkLocalCommunicationTimeExpression = getPlinkLocalCommunicationTime(
-                            partition, instanceDecisionVariables);
-
-                    localCommunicationTimeExpression.add(plinkLocalCommunicationTimeExpression);
-                }
-
-                GRBVar localCommunicationTimeInPartition = model.addVar(0.0, localCommunicationTimeUpperBound,
-                        0.0, GRB.CONTINUOUS, "T_lc_" + partition.toString());
-
-                model.addConstr(localCommunicationTimeInPartition, GRB.EQUAL, localCommunicationTimeExpression,
-                        "T_lc_" + partition.toString() + "_constraint");
-
-                localCommunicationTimeList.add(localCommunicationTimeInPartition);
-
-            }
-
-            GRBVar localCommunicationTime = model.addVar(0.0, localCommunicationTimeUpperBound, 0.0,
-                    GRB.CONTINUOUS, "T_lc");
-            GRBVar[] localCommunicationTimeInPartitionArray = localCommunicationTimeList.toArray(
-                    new GRBVar[localCommunicationTimeList.size()]);
-            model.addGenConstrMax(localCommunicationTime, localCommunicationTimeInPartitionArray,
-                    0.0, "T_lc_constraint");
-
-
-
-            // -- formulate the inter core communication time
-
-            GRBLinExpr globalCommunicationTimeExpression =
-                    getCoreToCoreCommunicationTime(partitions, instanceDecisionVariables);
-            // -- add the plink global communication time
-            GRBLinExpr plinkCoreToCoreCommunicationTimeExpression =
-                    getPartitionToPlinkCommunicationExpression(partitions, instanceDecisionVariables);
-            globalCommunicationTimeExpression.add(plinkCoreToCoreCommunicationTimeExpression);
-
-            // -- compute and upper bound for the global communication time
-            // TODO: Maybe make the bound tighter?
-            Double globalCommunicationTimeUpperBound = network.getConnections().stream().map(
-                    con -> this.multicoreDB.getCommunicationTicks(con,
-                            CommonProfileDataBase.CommunicationTicks.Kind.Global) * this.multicoreClockPeriod
-            ).reduce(Double::sum).orElseThrow(() -> new CompilationException(
-                    new Diagnostic(Diagnostic.Kind.ERROR,
-                            "Could not compute local communication time upper bound")
-            ));
-            GRBVar globalCommunicationTime = model.addVar(0.0, globalCommunicationTimeUpperBound,
-                    0.0, GRB.CONTINUOUS, "T_cc");
-            model.addConstr(globalCommunicationTime, GRB.EQUAL, globalCommunicationTimeExpression,
-                    "T_cc_constraint");
-
-
-            GRBLinExpr objectiveExpression = new GRBLinExpr();
-            objectiveExpression.addTerm(1.0, executionTime);
-            objectiveExpression.addTerm(1.0, localCommunicationTime);
-            objectiveExpression.addTerm(1.0, globalCommunicationTime);
-
-            GRBVar totalTime = model.addVar(0.0,
-                    partitionTimeUpperBound + localCommunicationTimeUpperBound + globalCommunicationTimeUpperBound,
-                    0.0, GRB.CONTINUOUS, "T");
-            model.addConstr(totalTime, GRB.EQUAL, objectiveExpression, "total_time_constraint");
-
-            model.setObjective(objectiveExpression, GRB.MINIMIZE);
-
-            Path modelFile = logPath.resolve("model.lb");
-            info("Writing the model into " + modelFile.toAbsolutePath().toString());
-
-            model.write(modelFile.toString());
-
-            model.presolve();
-            model.optimize();
-
-
-
-        } catch (GRBException e){
-            fatalError("Could not solve or build the performance model: " + e.toString());
-        }
-
-
-    }
 
     /**
      * Formulate the local communication time for each partition, it does not include the
@@ -480,40 +118,22 @@ public class PinnedHardwareModel extends PerformanceModel {
      * @param instanceDecisionVariables
      * @return A linear expression showing the time spent on each partition for local communications
      */
-    private GRBLinExpr getLocalCoreCommunicationExpression(SoftwarePartition partition,
-                                                           Map<Instance, DecisionVariables> instanceDecisionVariables) {
+    @Override
+    protected GRBLinExpr getLocalCoreCommunicationExpression(SoftwarePartition partition,
+                                                           Map<Instance, DecisionVariables> instanceDecisionVariables,
+                                                             ImmutableList<Connection> softwareConnections) {
 
-        GRBLinExpr expr = new GRBLinExpr();
-        ImmutableList<Connection> softwareConnections = getSoftwareOnlyConnections();
+
+        GRBLinExpr expr = super.getLocalCoreCommunicationExpression(partition, instanceDecisionVariables,
+                softwareConnections);
+
+
         try {
+            if (partition.toIndex() == 0){
+                GRBLinExpr plinkLocalCommunicationTimeExpression = getPlinkLocalCommunicationTime(
+                        partition, instanceDecisionVariables);
 
-            for (Connection connection: softwareConnections) {
-
-                Instance sourceActor = findInstance(connection.getSource());
-                Instance targetActor = findInstance(connection.getTarget());
-
-                GRBVar sourceDecisionVariable = instanceDecisionVariables.get(sourceActor)
-                        .getDecisionVariable(partition);
-                GRBVar targetDecisionVariable  = instanceDecisionVariables.get(targetActor)
-                        .getDecisionVariable(partition);
-
-                GRBVar connectionOnTheSamePartition = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
-                        "d_" + partition.toString() + "_" + getConnectionName(connection));
-
-                // -- the connection is local one if both source and target decision variables are 1, i.e., logical and
-                // constraint
-                GRBVar[] conjunctionConstraintArguments = new GRBVar[2];
-                conjunctionConstraintArguments[0] = sourceDecisionVariable;
-                conjunctionConstraintArguments[1] = targetDecisionVariable;
-
-                model.addGenConstrAnd(connectionOnTheSamePartition, conjunctionConstraintArguments,
-                        "connection_" + getConnectionName(connection) +
-                                "_on_partition_" + partition.toString() + "_constraint");
-
-                Double communicationTime = this.multicoreDB.getCommunicationTicks(
-                        connection, CommonProfileDataBase.CommunicationTicks.Kind.Local) * this.multicoreClockPeriod;
-                expr.addTerm(communicationTime, connectionOnTheSamePartition);
-
+                expr.add(plinkLocalCommunicationTimeExpression);
             }
 
         } catch (GRBException e) {
@@ -562,7 +182,7 @@ public class PinnedHardwareModel extends PerformanceModel {
             Instance sourceActor = findInstance(connection.getSource());
             GRBVar sourceActorDecisionVariable = instanceDecisionVariables.get(sourceActor)
                     .getDecisionVariable(plinkPartition);
-            Double communicationTime = this.multicoreDB.getCommunicationTicks(
+            double communicationTime = this.multicoreDB.getCommunicationTicks(
                     connection, CommonProfileDataBase.CommunicationTicks.Kind.Local) * this.multicoreClockPeriod;
             expr.addTerm(communicationTime, sourceActorDecisionVariable);
         }
@@ -641,7 +261,7 @@ public class PinnedHardwareModel extends PerformanceModel {
                 Instance sourceActor = findInstance(connection.getSource());
                 GRBVar sourceDecisionVariable = instanceDecisionVariablesMap.get(sourceActor)
                         .getDecisionVariable(p);
-                Double communicationTime = this.multicoreDB.getCommunicationTicks(
+                double communicationTime = this.multicoreDB.getCommunicationTicks(
                         connection, CommonProfileDataBase.CommunicationTicks.Kind.Global) *
                         this.multicoreClockPeriod;
 
@@ -659,53 +279,23 @@ public class PinnedHardwareModel extends PerformanceModel {
      * @param instanceDecisionVariablesMap a map from instances to decision variables
      * @return a linear expression formulating the inter-core communication cost
      */
-    private GRBLinExpr getCoreToCoreCommunicationTime(ImmutableList<SoftwarePartition> partitions,
-                                                      Map<Instance, DecisionVariables> instanceDecisionVariablesMap) {
-        ImmutableList<Connection> softwareConnection = getSoftwareOnlyConnections();
-        Set<SoftwarePartition> partitionSet = new HashSet<>(partitions);
+    @Override
+    protected GRBLinExpr getCoreToCoreCommunicationTime(ImmutableList<SoftwarePartition> partitions,
+                                                      Map<Instance, DecisionVariables> instanceDecisionVariablesMap,
+                                                        ImmutableList<Connection> softwareConnections) {
 
-        GRBLinExpr expr = new GRBLinExpr();
-        for(Connection connection : softwareConnection) {
+        // -- add the plink global communication time
+        GRBLinExpr plinkCoreToCoreCommunicationTimeExpression =
+                getPartitionToPlinkCommunicationExpression(partitions, instanceDecisionVariablesMap);
 
-            for (SoftwarePartition psource: partitionSet) {
-
-                Set<SoftwarePartition> exclusivePartitionSet = new HashSet<>(partitions);
-                exclusivePartitionSet.remove(psource);
-
-                for (SoftwarePartition ptarget: exclusivePartitionSet) {
-
-                    Instance sourceActor = findInstance(connection.getSource());
-                    Instance targetActor = findInstance(connection.getTarget());
-                    GRBVar sourceDecisionVariable = instanceDecisionVariablesMap.get(sourceActor)
-                            .getDecisionVariable(psource);
-                    GRBVar targetDecisionVariable = instanceDecisionVariablesMap.get(targetActor)
-                            .getDecisionVariable(ptarget);
-                    try {
-                        String variableName = "d_" + getConnectionName(connection) + "_" +
-                                psource.toString() + "_" + ptarget.toString();
-                        GRBVar conjunctionSourceTarget = model.addVar(0.0, 1.0, 0.0, GRB.BINARY,
-                                variableName);
-                        GRBVar[] conjunctionArguments = {
-                                sourceDecisionVariable, targetDecisionVariable
-                        };
-                        model.addGenConstrAnd(conjunctionSourceTarget, conjunctionArguments,
-                                variableName + "_and_constraint");
-
-                        Double communicationTime = this.multicoreDB.getCommunicationTicks(
-                                connection, CommonProfileDataBase.CommunicationTicks.Kind.Global
-                        ) * this.multicoreClockPeriod;
-
-                        expr.addTerm(communicationTime, conjunctionSourceTarget);
-
-                    } catch (GRBException e) {
-                        error("Could not formulate the " + psource.toString() + " to "  + ptarget.toString() +
-                                " communication time for connection " + getConnectionName(connection));
-                    }
-                }
-
-            }
-
+        GRBLinExpr expr = super.getCoreToCoreCommunicationTime(partitions, instanceDecisionVariablesMap,
+                softwareConnections);
+        try {
+            expr.add(plinkCoreToCoreCommunicationTimeExpression);
+        } catch (GRBException e) {
+            fatalError("Could not formulate the core to core communication with plink");
         }
+
 
         return expr;
 
@@ -716,79 +306,303 @@ public class PinnedHardwareModel extends PerformanceModel {
      * @param instanceDecisionVariables a map from instance to decision variables
      * @return a linear expression formulating the local partition communication time
      */
-    private GRBLinExpr getPartitionTimeExpression(SoftwarePartition partition,
-                                                  Map<Instance, DecisionVariables> instanceDecisionVariables) {
+    @Override
+    protected GRBLinExpr getPartitionTimeExpression(SoftwarePartition partition,
+                                                  Map<Instance, DecisionVariables> instanceDecisionVariables,
+                                                    ImmutableList<Instance> actors) {
 
         // The time spent in each partition is the sum of the times of each actor assigned to that partition
-        GRBLinExpr expr = new GRBLinExpr();
-        try {
-            int numActors = softwareActors.size();
-            GRBVar[] decisionVariables = softwareActors.stream().map(
-                    instance -> instanceDecisionVariables.get(instance).getDecisionVariable(partition))
-                    .collect(ImmutableList.collector()).toArray(new GRBVar[numActors]);
-            double[] actorCost = new double[numActors];
-            for (int ix = 0; ix < numActors; ix++)
-                actorCost[ix] = this.multicoreDB.getInstanceTicks(softwareActors.get(ix))
-                        .doubleValue() * this.multicoreClockPeriod;
-            // if a decision variable is 1, then the cost of the corresponding actor is added to the partition cost
-            expr.addTerms(actorCost, decisionVariables);
-        } catch (GRBException e) {
-            error("Could not formulate partition time");
+        GRBLinExpr expr = super.getPartitionTimeExpression(partition, instanceDecisionVariables, actors);
+
+        if (partition.toIndex() == 0) {
+            Double plinkTime = getPlinkKernelCost() + getPlinkWriteCost() + getPlinkReadCost();
+
+//            plinkTime = 0.800;
+            // -- the plink is pinned to the first partition
+            expr.addConstant(plinkTime);
         }
         return expr;
     }
-    private Double getPlinkKernelCost() {
+    public Double getPlinkKernelCost() {
         return Collections.max(
                         hardwareActors.map(this.accelDB::getInstanceTicks)).doubleValue() * this.accelClockPeriod;
     }
-    private Double getPlinkReadCost() {
 
-        // -- we assume the plink is on the first core 0
-        // A plink read cost has its source actor on hardware and target actor on software
+    public Double getPlinkKernelCost2() {
+        return Collections.max(
+                hardwareActors.map(this::getHardwareActorCost)
+        );
+    }
 
-        return task.getNetwork().getConnections().stream()
+    private Double getProduction(Connection connection) {
+        Long tokensExchanged = this.multicoreDB.getTokensExchanged(connection);
+        Instance sourceInstance = findInstance(connection.getSource());
+        double instanceExecTime = this.accelDB.getInstanceTicks(sourceInstance) * this.accelClockPeriod;
+        return tokensExchanged.doubleValue() / instanceExecTime;
+    }
+    private Double getConsumption(Connection connection) {
+        Long tokensExchanged = this.multicoreDB.getTokensExchanged(connection);
+        Instance targetInstance = findInstance(connection.getTarget());
+        double instanceExecTime = this.accelDB.getInstanceTicks(targetInstance) * this.accelClockPeriod;
+        return tokensExchanged.doubleValue() / instanceExecTime;
+    }
+    private Double getHardwareActorCost(Instance instance) {
+
+        Entity actor = task.getModule(GlobalNames.key).entityDecl(instance.getEntityName(), true)
+                .getEntity();
+        Double instanceTime = this.accelDB.getInstanceTicks(instance) * this.accelClockPeriod;
+
+        Function<PortDecl, Double> getActorOutputTime = output -> {
+            Connection outputConnection = this.task.getNetwork().getConnections().stream()
+                    .filter(c ->
+                            c.getSource().getInstance().isPresent() &&
+                                    c.getSource().getInstance().get().equals(instance.getInstanceName()) &&
+                                    c.getSource().getPort().equals(output.getName()))
+                    .findFirst()
+                    .orElseThrow(
+                            () -> new CompilationException(
+                                    new Diagnostic(Diagnostic.Kind.ERROR,
+                                            "Could not find the connection for " +
+                                                    instance.getInstanceName() + "." + output.getName())));
+            // is it a cross boundary connection?
+            Instance consumerInstance = findInstance(outputConnection.getTarget());
+            if (hardwareActors.contains(consumerInstance)) {
+
+                Double prod = getProduction(outputConnection);
+                Double cons = getConsumption(outputConnection);
+                if (prod > cons) {
+                    int capacity = 1024;
+                    Long tokensExchanged = this.multicoreDB.getTokensExchanged(outputConnection);
+                    Long transientEnqueues = (capacity < tokensExchanged) ? capacity : tokensExchanged;
+                    Double transientTime = transientEnqueues / (prod - cons);
+
+                    Double steadyTime = 0.0;
+                    if (tokensExchanged.doubleValue() > prod * transientTime) {
+                        steadyTime = (tokensExchanged.doubleValue() - prod * transientTime) / cons;
+                    }
+                    return transientTime + steadyTime;
+                }
+            }
+
+            return this.accelDB.getInstanceTicks(instance) * this.accelClockPeriod;
+
+        };
+
+        Function<PortDecl, Double> getActorInputTime = input -> {
+            Connection inputConnection = this.task.getNetwork().getConnections().stream()
+                    .filter(c ->
+                                c.getTarget().getInstance().isPresent() &&
+                                        c.getTarget().getInstance().get().equals(instance.getInstanceName()) &&
+                                        c.getTarget().getPort().equals(input.getName()))
+                    .findFirst()
+                    .orElseThrow(
+                            () -> new CompilationException(
+                                    new Diagnostic(Diagnostic.Kind.ERROR,
+                                            "Could not find the connection for " +
+                                            instance.getInstanceName() + "." + input.getName())
+                            )
+                    );
+
+            Instance producerInstance = findInstance(inputConnection.getSource());
+            if (hardwareActors.contains(producerInstance)) {
+                Double prod = getProduction(inputConnection);
+                Double cons = getConsumption(inputConnection);
+
+                if (cons > prod) {
+                    return (cons / prod) * instanceTime;
+                }
+            }
+            return instanceTime;
+        };
+
+        ImmutableList<Double> outputProductionTimes = actor.getOutputPorts().map(getActorOutputTime);
+        ImmutableList<Double> inputConsumptionTimes = actor.getInputPorts().map(getActorInputTime);
+        return Collections.max(ImmutableList.concat(outputProductionTimes, inputConsumptionTimes));
+    }
+
+
+    public void reportHardwareConsumptionProductions() {
+
+        ImmutableList<Connection> hardwareConnections = task.getNetwork().getConnections().stream()
+                .filter(connection -> {
+                    Instance sourceInstance = findInstance(connection.getSource());
+                    Instance targetInstance = findInstance(connection.getTarget());
+                    return hardwareActors.contains(sourceInstance) && hardwareActors.contains(targetInstance);
+                })
+                .collect(ImmutableList.collector());
+        System.out.printf("%29s\t\t%50s\t\t%29s\n", "production", "connection", "consumption");
+        for(Connection connection : hardwareConnections) {
+            Double prod = getProduction(connection);
+            Double cons = getConsumption(connection);
+            System.out.printf("%09.9f(tokes/s)\t\t%50s\t\t%09.9f(tokens/s)\n", prod, getConnectionName(connection), cons);
+        }
+    }
+
+    /**
+     * Approximate the number of kernel calls based on the size of buffer and the number of tokens that should
+     * be transferred via each PLink connection
+     * @return approximate number of kernel calls
+     */
+    public Double getNumberOfKernelCalls() {
+
+        Function<Connection, Double> getNumberOfTransfers = connection -> {
+            // -- number of bytes that should be transferred via connection
+            Long bytesExchanged = this.multicoreDB.getBytesExchanged(connection);
+            // -- size of the maximum payload
+            Long bufferSize = Long.valueOf(this.multicoreDB.getConnectionBytes(connection));
+            return bytesExchanged.doubleValue() / bufferSize.doubleValue();
+        };
+        Function<ImmutableList<Double>, Double> getMax = connections ->
+                connections.stream().max(Double::compare).orElseThrow(() ->
+                        new CompilationException(new
+                                Diagnostic(Diagnostic.Kind.ERROR,
+                                "Could not get the minimum number of reads for plink")));
+
+        ImmutableList<Double> minNumberOfReads = getPlinkReadConnections().stream()
+                .map(getNumberOfTransfers).collect(ImmutableList.collector());
+        Double minReads = getMax.apply(minNumberOfReads);
+
+        ImmutableList<Double> minNumberOfWrites = getPlinkWriteConnections().stream()
+                .map(getNumberOfTransfers).collect(ImmutableList.collector());
+        Double minWrites = getMax.apply(minNumberOfWrites);
+
+        return Math.max(minReads, minWrites);
+
+    }
+
+    private ImmutableList<Connection> getPlinkReadConnections() {
+        ImmutableList<Connection> readConnections =  task.getNetwork().getConnections().stream()
                 .filter(connection -> {
                     // filter out connections that are not hardware to software connections
                     Instance sourceActor = findInstance(connection.getSource());
                     Instance targetActor = findInstance(connection.getTarget());
                     return hardwareActors.contains(sourceActor) && softwareActors.contains(targetActor);
-                })
-                .map(connection -> {
-                    Long bufferSize = Long.valueOf(this.multicoreDB.getConnectionBytes(connection));
-                    Long bytesExchanged = this.multicoreDB.getTokensExchanged(connection);
-                    Double readTime = this.accelDB.getPCIeReadTime(bufferSize, bytesExchanged);
-                    return readTime;
-        }).reduce(Double::sum)
-                .orElseThrow(
-                        () -> new CompilationException(
-                                new Diagnostic(Diagnostic.Kind.ERROR,
-                                        "Error computing plink read time")));
+                }).collect(ImmutableList.collector());
+        return readConnections;
 
     }
-
-    private Double getPlinkWriteCost() {
-        // -- assuming the plink is on core 0, a fixed set of hardware and software actors the
-        // plink write time can be precomputed
-
-        return task.getNetwork().getConnections().stream()
+    private ImmutableList<Connection> getPlinkWriteConnections() {
+        ImmutableList<Connection> writeConnections = task.getNetwork().getConnections().stream()
                 .filter(connection -> {
                     // -- filter out connections that are not software to hardware connections
                     Instance sourceActor = findInstance(connection.getSource());
                     Instance targetActor = findInstance(connection.getTarget());
                     return hardwareActors.contains(targetActor) && softwareActors.contains(sourceActor);
 
-                })
+                }).collect(ImmutableList.collector());
+        return writeConnections;
+    }
+    public Double getPlinkReadCost() {
+
+        // -- we assume the plink is on the first core 0
+        // A plink read cost has its source actor on hardware and target actor on software
+        Double numberOfTransfers = getNumberOfKernelCalls();
+
+        ImmutableList<Connection> readConnections = getPlinkReadConnections();
+        ImmutableList<Double> costs = readConnections
                 .map(connection -> {
-                    Long bufferSize = Long.valueOf(this.multicoreDB.getConnectionBytes(connection));
-                    Long bytesExchanged = this.multicoreDB.getTokensExchanged(connection);
-                    Double writeTime = this.accelDB.getPCIeWriteTime(bufferSize, bytesExchanged);
-                    return writeTime;
-                }).reduce(Double::sum)
+
+                    Long bytesExchanged = this.multicoreDB.getBytesExchanged(connection);
+                    // -- virtual payload size in each transfer
+                    Double virtualPayloadSize = bytesExchanged.doubleValue() / numberOfTransfers;
+
+                    DeviceProfileDataBase.PCIeTicks ticks = this.accelDB.getOverEstimation(virtualPayloadSize);
+                    Double outputStageTicks = ticks.getKernelTicks().doubleValue() / 2.0;
+                    Double readSizeTicks = ticks.getReadSizeTicks().doubleValue();
+                    Double readTicks = ticks.getReadTicks().doubleValue();
+
+                    Double averageTransferTime = (outputStageTicks + readSizeTicks + readTicks) * 1e-9 /
+                            ticks.getRepeats().doubleValue();
+
+                    Double readTime = averageTransferTime * numberOfTransfers;
+
+                    return readTime;
+                });
+        Double totalCost = costs.stream().reduce(Double::sum)
                 .orElseThrow(
                         () -> new CompilationException(
-                                new Diagnostic(Diagnostic.Kind.ERROR, "Error computing plink write time")));
+                                new Diagnostic(Diagnostic.Kind.ERROR,
+                                        "Error computing plink read time")));
+        return totalCost;
 
     }
+
+    public Double getPlinkWriteCost() {
+        // -- assuming the plink is on core 0, a fixed set of hardware and software actors the
+        // plink write time can be precomputed
+        Double numberOfTransfers = getNumberOfKernelCalls();
+
+        ImmutableList<Connection> writeConnections = getPlinkWriteConnections();
+        ImmutableList<Double> costs = writeConnections.map(connection -> {
+            Long bytesExchanged = this.multicoreDB.getBytesExchanged(connection);
+
+            Double virtualPayloadSize = bytesExchanged.doubleValue() / numberOfTransfers;
+
+            DeviceProfileDataBase.PCIeTicks ticks = this.accelDB.getOverEstimation(virtualPayloadSize);
+
+            Double inputStageTicks = ticks.getKernelTicks().doubleValue() / 2.0;
+            Double readSizeTicks = ticks.getReadSizeTicks().doubleValue();
+            Double writeTicks = ticks.getWriteTicks().doubleValue();
+
+            Double averageTransferTime = (inputStageTicks + readSizeTicks + writeTicks) * 1e-9 /
+                    ticks.getRepeats().doubleValue();
+
+            Double writeTime = averageTransferTime * numberOfTransfers;
+
+            return writeTime;
+        });
+
+        Double costSum =  costs.stream().reduce(Double::sum).orElseThrow(
+                () -> new CompilationException(
+                        new Diagnostic(Diagnostic.Kind.ERROR, "Error computing plink write time")));
+        return costSum;
+
+    }
+
+
+    @Override
+    protected PartitioningSolution<String> createSolution(List<TypedPartition> partitionTypes,
+                                                        Map<Instance, DecisionVariables> instanceDecisionVariablesMap) {
+
+        ImmutableList.Builder<Partition<String>> partitionsBuilder = ImmutableList.builder();
+//        partitionTypes.sort(Comparator.comparingInt(SoftwarePartition::toIndex));
+
+
+        for (TypedPartition p: partitionTypes) {
+
+            ImmutableList<Instance> instancesInP = softwareActors.stream()
+                    .filter(inst -> {
+                        GRBVar pNumber = instanceDecisionVariablesMap.get(inst).getPartitionNumber();
+                        int partitionIndex = 0;
+                        try {
+                            Double pNumberDouble = pNumber.get(GRB.DoubleAttr.Xn);
+                            Double floorValue = (double) pNumberDouble.intValue();
+                            Double ceilValue = floorValue + 1;
+                            if (pNumberDouble - floorValue < ceilValue - pNumberDouble) {
+                                partitionIndex = floorValue.intValue();
+                            } else {
+                                partitionIndex = ceilValue.intValue();
+                            }
+                        } catch (GRBException e) {
+                            fatalError("Could not get the partitionIndex value as Integer for instance "
+                                    + inst.getInstanceName() + ": " + e.getMessage());
+                        }
+                        return partitionIndex == p.toIndex();
+                    }).collect(ImmutableList.collector());
+            ImmutableList.Builder<String> instanceNames = ImmutableList.builder();
+            if (p.toIndex() == 0) {
+                instanceNames.add(uniquePlinkName(task.getNetwork(), "system_plink"));
+            }
+            instanceNames.addAll(instancesInP.map(Instance::getInstanceName));
+            Partition<String> thisPartition = new Partition<String>(instanceNames.build(), p);
+
+            partitionsBuilder.add(thisPartition);
+        }
+        return new PartitioningSolution<>(partitionsBuilder.build());
+
+    }
+
+
 
 
 }

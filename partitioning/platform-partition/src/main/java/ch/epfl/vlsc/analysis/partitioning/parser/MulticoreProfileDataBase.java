@@ -42,7 +42,7 @@ public class MulticoreProfileDataBase extends CommonProfileDataBase{
         public Integer getDepth() {
             return depth;
         }
-
+//        public Integer getDepth() { return (1 << 17); }
         public Integer getWidth() {
             return width;
         }
