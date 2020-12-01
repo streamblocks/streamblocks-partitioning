@@ -3,16 +3,16 @@ package ch.epfl.vlsc.analysis.partitioning.models;
 import ch.epfl.vlsc.analysis.partitioning.parser.CommonProfileDataBase;
 import ch.epfl.vlsc.analysis.partitioning.parser.DeviceProfileDataBase;
 import ch.epfl.vlsc.analysis.partitioning.parser.MulticoreProfileDataBase;
-import ch.epfl.vlsc.analysis.partitioning.phase.PartitioningAnalysisPhase;
-import ch.epfl.vlsc.compiler.PartitionedCompilationTask;
-import ch.epfl.vlsc.configuration.Configuration;
-import com.sun.imageio.plugins.common.ImageUtil;
+
 import gurobi.*;
-import org.graalvm.compiler.core.common.type.ArithmeticOpTable;
+
+import se.lth.cs.tycho.attribute.GlobalNames;
 import se.lth.cs.tycho.compiler.CompilationTask;
 import se.lth.cs.tycho.compiler.Compiler;
 import se.lth.cs.tycho.compiler.Context;
-import se.lth.cs.tycho.ir.entity.nl.InstanceDecl;
+
+import se.lth.cs.tycho.ir.entity.Entity;
+import se.lth.cs.tycho.ir.entity.PortDecl;
 import se.lth.cs.tycho.ir.network.Connection;
 import se.lth.cs.tycho.ir.network.Instance;
 import se.lth.cs.tycho.ir.network.Network;
@@ -21,7 +21,9 @@ import se.lth.cs.tycho.reporting.CompilationException;
 import se.lth.cs.tycho.reporting.Diagnostic;
 
 
-import java.lang.reflect.Type;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.PrintWriter;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.function.Function;
@@ -75,7 +77,10 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
             context.getReporter().report(new Diagnostic(Diagnostic.Kind.INFO,
                     "Solving performance model for " + numberOfCores));
             GRBEnv env = new GRBEnv(true);
-            Path logPath = context.getConfiguration().get(Compiler.targetPath);
+            Path logPath = context.getConfiguration().get(Compiler.targetPath).resolve("heterogeneous");
+            if (!logPath.toFile().exists()) {
+                logPath.toFile().mkdirs();
+            }
             Path logfile = logPath.resolve("partitions.log");
 
             context.getReporter().report(
@@ -89,9 +94,6 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
             model = new GRBModel(env);
 
             model.set(GRB.DoubleParam.TimeLimit, this.timeLimit);
-
-
-
 
 
 //            int numberOfCores = context.getConfiguration().get(PartitionSettings.cpuCoreCount);
@@ -112,11 +114,7 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
 
             SoftwarePartition plinkPartition = (SoftwarePartition) partitions.get(0);
 
-            Set<String> P = new HashSet<>();
-            // (Set) of all instances
-            ImmutableList<Instance> I = network.getInstances();
-            // (Set) of all connections
-            ImmutableList<Connection> C = network.getConnections();
+
 
             Map<Instance, DecisionVariables> instanceDecisionVariables = network.getInstances().stream()
                     .collect(Collectors.toMap(
@@ -127,28 +125,70 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
                     instanceDecisionVariables);
 
             // make sure every actor is assigned to exactly one partition
-            for (Instance i: I) {
+            for (Instance i: task.getNetwork().getInstances()) {
                 GRBLinExpr uniquePartitionExpression = instanceDecisionVariables.get(i).getUniquePartitionConstraint();
                 model.addConstr(uniquePartitionExpression, GRB.EQUAL, 1.0, i.getInstanceName() + "_unique_partition");
             }
 
             // Plink read/kernel/write times
-            GRBLinExpr plinkReadTimeExpression = getPLinkReadTimeExpression(accelPartition, instanceDecisionVariables,
+            ExpressionTuple plinkReadTimeExpressionTuple = getPLinkReadTimeExpression(accelPartition, instanceDecisionVariables,
                     instanceNotOnAccelDecisionVariables);
-            GRBLinExpr plinkKernelTimeExpression = getPLinkKernelTimeExpression(accelPartition,
-                    instanceDecisionVariables);
-            GRBLinExpr plinkWriteTimeExpression = getPlinkWriteTimeExpression(accelPartition,
+            GRBLinExpr plinkReadTimeExpression = plinkReadTimeExpressionTuple.first;
+
+            GRBLinExpr plinkNumberOfReadConnections = getNumberOfReadConnectionsExpression(
+                    accelPartition, instanceDecisionVariables, instanceNotOnAccelDecisionVariables
+            );
+
+
+            ExpressionTuple plinkWriteTimeExpressionTuple = getPlinkWriteTimeExpression(accelPartition,
                     instanceDecisionVariables,
                     instanceNotOnAccelDecisionVariables);
 
+            GRBLinExpr plinkWriteTimeExpression = plinkWriteTimeExpressionTuple.first;
+
+            GRBLinExpr plinkNumberOfWriteConnections = getNumberOfWriteConnectionsExpression(
+                    accelPartition, instanceDecisionVariables, instanceNotOnAccelDecisionVariables
+            );
+
+
+            // -- constraint the number of connection to and form the hardware
+
+            GRBVar numberOfReadConnections = model.addVar(0.0, task.getNetwork().getConnections().size(),
+                    0.0, GRB.INTEGER,
+                    "read_connections");
+            GRBVar numberOfWriteConnections = model.addVar(0.0, task.getNetwork().getConnections().size(), 0.0,
+                    GRB.INTEGER, "write_connections");
+
+            model.addConstr(numberOfReadConnections, GRB.EQUAL, plinkNumberOfReadConnections,
+                    "constraint_number_of_reads");
+            model.addConstr(numberOfWriteConnections, GRB.EQUAL, plinkNumberOfWriteConnections,
+                    "constraint_number_of_writes");
+            GRBLinExpr numberOfConnectionsExpressions = new GRBLinExpr();
+
+            numberOfConnectionsExpressions.addTerm(1.0, numberOfReadConnections);
+            numberOfConnectionsExpressions.addTerm(1.0, numberOfWriteConnections);
+
+            model.addConstr(numberOfConnectionsExpressions, GRB.LESS_EQUAL, 15.0,
+                    "constraint_number_of_connections");
+
             GRBVar plinkKernelTime = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS,
                     "t_plink_kernel");
+
+            ImmutableList<GRBVar> hardwareTimes = getPLinkKernelTimeExpression(accelPartition,
+                    instanceDecisionVariables);
+            model.addGenConstrMax(plinkKernelTime, hardwareTimes.toArray(new GRBVar[0]), 0.0,
+                    "constraint_t_plink_kernel");
+
+            GRBLinExpr plinkKernelTimeExpression = new GRBLinExpr();
+            plinkKernelTimeExpression.addTerm(1.0, plinkKernelTime);
+
             GRBVar plinkReadTime = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS,
                     "t_plink_read");
             GRBVar plinkWriteTime = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS,
                     "t_plink_write");
 
-            model.addConstr(plinkKernelTime, GRB.EQUAL, plinkKernelTimeExpression, "constraint_t_plink_kernel");
+
+
             model.addConstr(plinkReadTime, GRB.EQUAL, plinkReadTimeExpression, "constraint_t_plink_read");
             model.addConstr(plinkWriteTime, GRB.EQUAL, plinkWriteTimeExpression, "constraint_t_plink_write");
 
@@ -189,6 +229,24 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
             GRBVar[] partitionExecTimeArray = partitionExecTimeList.toArray(new GRBVar[softwarePartitions.size()]);
             GRBVar executionTime = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS, "T_exec");
             model.addGenConstrMax(executionTime, partitionExecTimeArray, 0.0, "constraint_T_exec");
+
+
+            // -- pin software and hardware actors
+            for (Instance instance : task.getNetwork().getInstances()) {
+                if (!this.accelDB.getExecutionProfileDataBase().contains(instance)) {
+                    // -- instance should be software only
+                    GRBVar v = instanceDecisionVariables.get(instance).getDecisionVariable(accelPartition);
+                    model.addConstr(v, GRB.EQUAL, 0.0, "constraint_pinned_software_"
+                            + instance.getInstanceName());
+                    info("Actor " + instance.getInstanceName() + " is pinned to software");
+                }
+                if (!this.multicoreDB.getExecutionProfileDataBase().contains(instance)) {
+                    GRBVar v =  instanceDecisionVariables.get(instance).getDecisionVariable(accelPartition);
+                    model.addConstr(v, GRB.EQUAL, 1.0, "constraint_pinned_hardware_" +
+                            instance.getInstanceName());
+                    info("Actor " + instance.getInstanceName() + " is pinned to hardware");
+                }
+            }
 
 
             // -- local communication
@@ -251,11 +309,67 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
 
             model.write(modelFile.toString());
 
+            model.setObjective(objectiveExpression, GRB.MINIMIZE);
+
             model.presolve();
             model.optimize();;
 
-            return null;
+            ImmutableList<PartitioningSolution<Instance>> solutions =
+                    collectSolution(model, partitions, instanceDecisionVariables);
+            File dumpDir = logPath.resolve(String.valueOf(numberOfCores)).toFile();
+            if (!dumpDir.exists()) {
+                dumpDir.mkdirs();
+            }
+            info("Solved the heterogeneous model for " + numberOfCores + " cores");
 
+            solutionsSummary(dumpDir);
+
+            ImmutableList<PartitioningSolution<String>> rawSoftwareSolutions = solutions.stream().map(sol -> {
+               ImmutableList<Partition<String>> swPartitions =
+                       sol.getPartitions().stream()
+                               .filter(p -> p.getPartitionType() instanceof SoftwarePartition)
+                               .map(p -> {
+                                   if (p.getPartitionType().toIndex() == 0)
+                                       return new Partition<String>
+                                               (
+                                                       ImmutableList.concat(
+                                                               p.getInstances().map(Instance::getInstanceName),
+                                                               ImmutableList.of("system_plink_0")),
+                                                       p.getPartitionType()
+                                               );
+                                   else
+                                       return new Partition<String>
+                                           (p.getInstances().map(Instance::getInstanceName), p.getPartitionType());
+                               })
+                       .collect(ImmutableList.collector());
+               return new PartitioningSolution<String>(swPartitions);
+            }).collect(ImmutableList.collector());
+
+
+            info("Saving multicore configs into " + dumpDir);
+            File multicoreDumpDir = new File(dumpDir + "/multicore");
+            multicoreDumpDir.mkdirs();
+            for (PartitioningSolution<String> sol : rawSoftwareSolutions) {
+                dumpMulticoreConfig(multicoreDumpDir + "/config_" + rawSoftwareSolutions.indexOf(sol) + ".xml",
+                        sol);
+
+            }
+            info("Saving xcf configurations into " + dumpDir);
+            File xcfDumpDir = new File(dumpDir + "/xcf");
+            xcfDumpDir.mkdirs();
+            Map<Connection, Integer> bufferDepth = task.getNetwork().getConnections().stream()
+                    .collect(Collectors.toMap(
+                            Function.identity(),
+                            c -> this.multicoreDB.getConnectionSettingsDataBase().get(c).getDepth()
+                    ));
+            for (PartitioningSolution<Instance> sol : solutions) {
+                dumpXcfConfig(xcfDumpDir + "/configuration_" + solutions.indexOf(sol) + ".xcf", sol, bufferDepth);
+            }
+
+
+            solutionsSummary(dumpDir);
+
+            return rawSoftwareSolutions;
 
         } catch (GRBException e) {
             throw new CompilationException(
@@ -264,11 +378,11 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
                                     e.getErrorCode(), e.getMessage())));
 
         }
-        return null;
+
     }
 
 
-    protected GRBLinExpr getPLinkKernelTimeExpression(HardwarePartition accelPartition, Map<Instance, DecisionVariables> instanceDecisionVariableMap) {
+    protected ImmutableList<GRBVar> getPLinkKernelTimeExpression(HardwarePartition accelPartition, Map<Instance, DecisionVariables> instanceDecisionVariableMap) {
 
         GRBLinExpr expr = new GRBLinExpr();
         try {
@@ -279,18 +393,46 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
                     .collect(Collectors.toList())
                     .toArray(new GRBVar[numActors]);
 
-            double[] execTimes = new double[numActors];
 
+            double upperBound = task.getNetwork().getInstances().stream().map(
+                    i -> this.accelDB.getInstanceTicks(i).doubleValue()
+            ).reduce(Double::sum).orElseThrow(
+                    () -> new CompilationException(new Diagnostic(Diagnostic.Kind.ERROR, "Could not compute " +
+                            "t_plink upper bound"))) * this.accelClockPeriod;
+
+            ImmutableList.Builder<GRBVar> builder = ImmutableList.builder();
             for (int ix = 0; ix < numActors; ix++) {
-                execTimes[ix] = this.accelDB.getInstanceTicks(task.getNetwork().getInstances().get(ix)).doubleValue() *
-                        this.accelClockPeriod;
+                Instance inst = task.getNetwork().getInstances().get(ix);
+                String varName = "t_hw_" + inst.getInstanceName();
+                GRBVar identityVar = model.addVar(0.0, upperBound, 0.0, GRB.CONTINUOUS, varName);
+                GRBLinExpr tmp = new GRBLinExpr();
+                double execTime = this.accelClockPeriod * this.accelDB.getInstanceTicks(inst);
+                tmp.addTerm(execTime, variables[ix]);
+
+                model.addConstr(identityVar, GRB.EQUAL, tmp, "constraint_" + varName);
+
+                builder.add(identityVar);
+
             }
 
-            expr.addTerms(execTimes, variables);
+            return builder.build();
+
         } catch (GRBException e) {
             fatalError("could build plink kernel time expression");
         }
-        return expr;
+        return ImmutableList.empty();
+    }
+
+    public static class ExpressionTuple {
+        public final GRBLinExpr first;
+        public final GRBLinExpr second;
+        private ExpressionTuple(GRBLinExpr first, GRBLinExpr second) {
+            this.first = first;
+            this.second = second;
+        }
+        static public  ExpressionTuple of(GRBLinExpr first, GRBLinExpr second) {
+            return new ExpressionTuple(first, second);
+        }
     }
 
     /**
@@ -300,10 +442,11 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
      * @param instanceOnAccelVariables
      * @return
      */
-    protected GRBLinExpr getPLinkReadTimeExpression(HardwarePartition accelPartition,
+    protected ExpressionTuple getPLinkReadTimeExpression(HardwarePartition accelPartition,
                                                      Map<Instance, DecisionVariables> instanceDecisionVariableMap,
                                                      Map<Instance, GRBVar> instanceOnAccelVariables) {
         GRBLinExpr expr = new GRBLinExpr();
+        GRBLinExpr connectionCount = new GRBLinExpr();
         try {
 
             for (Connection connection : task.getNetwork().getConnections()) {
@@ -330,9 +473,9 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
 
                 Long bufferSizeBytes = Long.valueOf((this.multicoreDB.getConnectionBytes(connection)));
                 Long byteExchanged = this.multicoreDB.getBytesExchanged(connection);
-                Double readTime = this.accelDB.getPCIeReadTime(bufferSizeBytes, byteExchanged);
+                Double readTime = this.accelDB.getPCIeReadTime(bufferSizeBytes, byteExchanged) * 1e-9;
                 expr.addTerm(readTime, hardwareSoftwareConnectionVariable);
-
+                connectionCount.addTerm(1.0, hardwareSoftwareConnectionVariable);
             }
 
 
@@ -340,8 +483,9 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
             fatalError("Could not build plink write cost expression: " + e.getMessage());
         }
 
-        return expr;
+        return ExpressionTuple.of(expr, connectionCount);
     }
+
 
     /**
      * Formulates the PLINK write time
@@ -350,11 +494,11 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
      * @param instanceNotOnAccelVariables
      * @return
      */
-    protected GRBLinExpr getPlinkWriteTimeExpression(HardwarePartition accelPartition,
+    protected ExpressionTuple getPlinkWriteTimeExpression(HardwarePartition accelPartition,
                                                      Map<Instance, DecisionVariables> instanceDecisionVariableMap,
                                                      Map<Instance, GRBVar> instanceNotOnAccelVariables) {
         GRBLinExpr expr = new GRBLinExpr();
-
+        GRBLinExpr connectionCount = new GRBLinExpr();
         try {
             for (Connection connection : task.getNetwork().getConnections()) {
                 Instance sourceInstance = findInstance(connection.getSource());
@@ -376,14 +520,15 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
                         "constraint_" + hardwareSoftwareConnectionVariableName);
                 Long bufferSizeBytes = Long.valueOf(this.multicoreDB.getConnectionBytes(connection));
                 Long bytesExchanged = this.multicoreDB.getBytesExchanged(connection);
-                Double writeTime = this.accelDB.getPCIeWriteTime(bufferSizeBytes, bytesExchanged);
+                Double writeTime = this.accelDB.getPCIeWriteTime(bufferSizeBytes, bytesExchanged) * 1e-9;
 
                 expr.addTerm(writeTime, hardwareSoftwareConnectionVariable);
+                connectionCount.addTerm(1.0, hardwareSoftwareConnectionVariable);
             }
         } catch (GRBException e) {
             fatalError("Could not build the plink write time expression: " + e.getMessage());
         }
-        return  expr;
+        return ExpressionTuple.of(expr, connectionCount);
     }
 
     /**
@@ -425,6 +570,133 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
         return mapping;
     }
 
+    /**
+     * Formulates and expression representing the number of write connections to the hardware
+     * @param accelPartition
+     * @param instanceDecisionVariablesMap
+     * @param instanceNotOnAccelMap
+     * @return
+     */
+    protected GRBLinExpr getNumberOfWriteConnectionsExpression(
+            HardwarePartition accelPartition,
+            Map<Instance, DecisionVariables> instanceDecisionVariablesMap,
+            Map<Instance, GRBVar> instanceNotOnAccelMap) {
+
+        return getNumberOfPCIeConnectionsExpression(accelPartition, instanceDecisionVariablesMap,
+                instanceNotOnAccelMap, false);
+    }
+
+    /**
+     * Formulate an expression representing the number of read connection from hardware to software.
+     * @param accelPartition
+     * @param instanceDecisionVariablesMap
+     * @param instanceNotOnAccelMap
+     * @return
+     */
+    protected GRBLinExpr getNumberOfReadConnectionsExpression(
+            HardwarePartition accelPartition,
+            Map<Instance, DecisionVariables> instanceDecisionVariablesMap,
+            Map<Instance, GRBVar> instanceNotOnAccelMap) {
+        return getNumberOfPCIeConnectionsExpression(
+                accelPartition, instanceDecisionVariablesMap, instanceNotOnAccelMap, true);
+
+    }
+
+    private GRBLinExpr getNumberOfPCIeConnectionsExpression(
+            HardwarePartition accelPartition,
+            Map<Instance, DecisionVariables> instanceDecisionVariablesMap,
+            Map<Instance, GRBVar> instanceNotOnAccelMap,
+            boolean is_read) {
+
+        GRBLinExpr expr = new GRBLinExpr();
+
+        for (Instance sourceInstance : task.getNetwork().getInstances()) {
+
+
+            // -- output connections for the source instance
+            ImmutableList<Connection> outputConnections =
+                    task.getNetwork().getConnections().stream()
+                            .filter(c -> c.getSource().getInstance().orElseThrow(
+                                    () -> new CompilationException(
+                                            new Diagnostic(
+                                                    Diagnostic.Kind.ERROR,
+                                                    "Encountered connection with not source instance")))
+                                    .equals(sourceInstance.getInstanceName()))
+                            .collect(ImmutableList.collector());
+            List<String> outputPorts = new ArrayList<>();
+            for (Connection c: outputConnections) {
+                if (!outputPorts.contains(c.getSource().getPort()))
+                    outputPorts.add(c.getSource().getPort());
+            }
+            // now we have list of output port with possible fan out patterns, we would like to model
+            // all the connections in a fan out from sourceInstance.outputPort_i to multiple target instances as
+            // a single connection to hardware. To do so, we can introduce new decision variable
+            // d_write_connection_sourceInstance_outputport_i =
+            // (d_sourceInstance_not_accel & d_targetInstance_0_accel) |
+            // (d_sourceInstance_not_accel & d_targetInstance_1_accel) |
+            // ...
+            // where targetInstance_j is a consumer for outputport_i
+
+            GRBVar sourceDecisionVariable = is_read ?
+                    instanceDecisionVariablesMap.get(sourceInstance).getDecisionVariable(accelPartition) :
+                    instanceNotOnAccelMap.get(sourceInstance);
+
+            for (String output : outputPorts) {
+
+                List<GRBVar> conjunctions = outputConnections.stream()
+                        .filter(c -> c.getSource().getPort().equals(output))
+                        .map(c -> {
+                            Instance targetInstance = findInstance(c.getTarget());
+                            GRBVar targetDecisionVariable = is_read ?
+                                    instanceNotOnAccelMap.get(targetInstance) :
+                                    instanceDecisionVariablesMap.get(targetInstance)
+                                            .getDecisionVariable(accelPartition);
+                            String conjunctionName = (is_read ? "d_read_connection_" : "d_write_connection_") +
+                                    getConnectionName(c) + (is_read ? "_accel_not_accel" : "_not_accel_accel");
+                            return makeConjunction(sourceDecisionVariable, targetDecisionVariable, conjunctionName);
+                        }).collect(Collectors.toList());
+                String disjunctionName = (is_read ? "d_read_connection_" : "d_write_connection_")
+                        + sourceInstance.getInstanceName() + "_" + output;
+                try {
+
+                    GRBVar disjunction = model.addVar(0.0, 1.0, 0.0, GRB.BINARY, disjunctionName);
+                    if (conjunctions.size() >= 2) {
+
+                        GRBVar[] args = conjunctions.toArray(new GRBVar[0]);
+                        model.addGenConstrOr(disjunction, args, "disjunction_constraint_" + disjunctionName);
+
+                    } else {
+                        model.addConstr(disjunction, GRB.EQUAL, conjunctions.get(0),
+                                "disjunction_constraint_" + disjunctionName);
+                    }
+
+                    // total number of write connections (excluding fanouts) is then the some of all the fanout-excluded
+                    // write connections
+                    expr.addTerm(1.0, disjunction);
+                } catch (GRBException e) {
+                    fatalError("Could not build the disjunction for " + (is_read ? "read" : "write" ) + " connection "
+                            + sourceInstance.getInstanceName() + "_" + output + ":" + e.getMessage());
+                }
+
+            }
+
+        }
+        return  expr;
+    }
+
+    protected GRBVar makeConjunction(GRBVar v1, GRBVar v2,  String name) {
+
+        GRBVar conjunction = null;
+        try {
+            conjunction = model.addVar(0.0, 1.0, 0.0, GRB.BINARY, name);
+            GRBVar [] args = {v1, v2};
+            model.addGenConstrAnd(conjunction, args, "constraint_and_" + name);
+
+        } catch (GRBException e) {
+            fatalError("could not build conjunction between " + name + ": " + e.getMessage());
+        }
+        return conjunction;
+    }
 
     /**
      * Formulates the plink to other software partitions communication cost
@@ -554,6 +826,7 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
         return expr;
     }
 
+
     private ImmutableList<PartitioningSolution<Instance>> collectSolution(
             GRBModel model,
             ImmutableList<TypedPartition> partitions,
@@ -626,5 +899,63 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
 
 
 
+    @Override
+    public void solutionsSummary(File dumpDir) {
+        if (model == null)
+            return;
+        File dumpFile = new File(dumpDir + "/solutions.csv");
+        try {
+            PrintWriter solutionWriter = new PrintWriter(dumpFile);
+            ImmutableList<String> variables = ImmutableList.of(
+                    "T", "T_exec",
+                    "T_lc","T_cc",
+                    "t_plink",
+                    "t_plink_read",
+                    "t_plink_kernel",
+                    "t_plink_write", "read_connections", "write_connections");
 
+            solutionWriter.println(String.join(",", variables));
+            try {
+                int solutionCount = model.get(GRB.IntAttr.SolCount);
+                for (int solutionIndex = 0; solutionIndex < solutionCount; solutionIndex ++) {
+
+                    model.set(GRB.IntParam.SolutionNumber, solutionIndex);
+                    System.out.println("Solution " + solutionIndex + ": ");
+                    printTimingBreakdown(solutionIndex, solutionWriter, variables);
+                    System.out.println();
+
+                }
+            } catch (GRBException e) {
+                fatalError("Could not print solution summary: " + e.getMessage());
+            }
+            solutionWriter.close();
+        } catch (FileNotFoundException e) {
+            fatalError("Could not print solution summaries: " + e.getMessage());
+        }
+    }
+
+    public void printTimingBreakdown(int id, PrintWriter writer, ImmutableList<String> variables){
+
+        ImmutableList.Builder<String> builder = ImmutableList.builder();
+        System.out.println("Solution " + id + " : ");
+        for (String varName : variables) {
+            try {
+                GRBVar variable = model.getVarByName(varName);
+                try {
+
+                    Double value = variable.get(GRB.DoubleAttr.Xn);
+                    System.out.printf("%s = %6.6f s\n", varName, value);
+                    builder.add(String.valueOf(value));
+                } catch (NullPointerException e) {
+                    fatalError("Could not get the value for " + varName + ": " + e.getMessage());
+                }
+            } catch (GRBException e) {
+                fatalError("Could not get the variable " + varName + ": "  + e.getMessage());
+            }
+
+        }
+
+        writer.println(String.join(",", builder.build()));
+
+    }
 }

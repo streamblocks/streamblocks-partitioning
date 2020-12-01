@@ -2,6 +2,9 @@ package ch.epfl.vlsc.analysis.partitioning.models;
 
 import ch.epfl.vlsc.analysis.partitioning.parser.CommonProfileDataBase;
 import ch.epfl.vlsc.analysis.partitioning.parser.MulticoreProfileDataBase;
+import ch.epfl.vlsc.configuration.Configuration;
+
+import ch.epfl.vlsc.configuration.ConfigurationManager;
 import gurobi.*;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -16,7 +19,7 @@ import se.lth.cs.tycho.reporting.CompilationException;
 import se.lth.cs.tycho.reporting.Diagnostic;
 
 
-
+import javax.xml.bind.JAXBException;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 import javax.xml.transform.OutputKeys;
@@ -25,8 +28,9 @@ import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
 import java.io.File;
-import java.lang.reflect.Type;
+
 import java.util.*;
+import java.util.function.Function;
 
 public abstract class PerformanceModel {
 
@@ -257,15 +261,106 @@ public abstract class PerformanceModel {
 
     }
 
-    public void dumpXcfConfig(String name, PartitioningSolution<Instance> partitionMap) {
+    public void dumpXcfConfig(String name, PartitioningSolution<Instance> partitionMap,
+                              Map<Connection, Integer> bufferDepthMap) {
 
-        File xcfFile = new File(name);
-        try {
+        Configuration xcf = new Configuration();
+
+        Configuration.Network xcfNetwork = new Configuration.Network();
+
+        xcfNetwork.setId(task.getIdentifier().toString());
+        xcf.setNetwork(xcfNetwork);
+
+        // -- create the software partition
+        Configuration.Partitioning partitioning = new Configuration.Partitioning();
+        Configuration.Partitioning.Partition softwarePartition = new Configuration.Partitioning.Partition();
+
+        softwarePartition.setId((short) 0);
+        softwarePartition.setPe("x86_64");
+        softwarePartition.setScheduling("ROUND_ROBIN");
+        softwarePartition.setCodeGenerator("sw");
+        softwarePartition.setHost(true);
+
+        // -- create the hardware partition
+        Configuration.Partitioning.Partition hardwarePartition = new Configuration.Partitioning.Partition();
+
+        hardwarePartition.setId((short) 1);
+        hardwarePartition.setPe("FPGA");
+        hardwarePartition.setScheduling("FULL_PARALLEL");
+        softwarePartition.setCodeGenerator("hw");
+        softwarePartition.setHost(false);
 
 
+        ImmutableList<Instance> softwareInstances = partitionMap.getPartitions()
+                .stream().filter(p -> p.getPartitionType() instanceof SoftwarePartition)
+                .flatMap(p -> p.getInstances().stream())
+                .collect(ImmutableList.collector());
+        ImmutableList<Instance> hardwareInstances = partitionMap.getPartitions()
+                .stream().filter(p -> p.getPartitionType() instanceof  HardwarePartition)
+                .flatMap(p -> p.getInstances().stream())
+                .collect(ImmutableList.collector());
 
-        } catch (Exception e) {
-            fatalError("Could not dump xcf to " + xcfFile.toString() + ": " + e.getMessage());
+        for (Instance instance : softwareInstances) {
+
+            Configuration.Partitioning.Partition.Instance xcfInstance = new Configuration.Partitioning.Partition.Instance();
+            xcfInstance.setId(instance.getInstanceName());
+            softwarePartition.getInstance().add(xcfInstance);
         }
+
+        for (Instance instance : hardwareInstances) {
+            Configuration.Partitioning.Partition.Instance xcfInstance = new Configuration.Partitioning.Partition.Instance();
+            xcfInstance.setId(instance.getInstanceName());
+            hardwarePartition.getInstance().add(xcfInstance);
+        }
+
+        partitioning.getPartition().add(softwarePartition);
+        partitioning.getPartition().add(hardwarePartition);
+
+
+        xcf.setPartitioning(partitioning);
+
+        // -- code generators
+
+        Configuration.CodeGenerators xcfCodeGenerator = new Configuration.CodeGenerators();
+        Configuration.CodeGenerators.CodeGenerator xcfSoftwareCodeGenerator =
+                new Configuration.CodeGenerators.CodeGenerator();
+        xcfSoftwareCodeGenerator.setId("sw");
+        xcfSoftwareCodeGenerator.setPlatform("multicore");
+
+        xcfCodeGenerator.getCodeGenerator().add(xcfSoftwareCodeGenerator);
+
+        Configuration.CodeGenerators.CodeGenerator xcfHardwareCodeGenrator =
+                new Configuration.CodeGenerators.CodeGenerator();
+
+        xcfHardwareCodeGenrator.setId("hw");
+        xcfHardwareCodeGenrator.setPlatform("vivado-hls");
+
+        xcfCodeGenerator.getCodeGenerator().add(xcfHardwareCodeGenrator);
+
+        xcf.setCodeGenerators(xcfCodeGenerator);
+
+
+        // connections
+        Configuration.Connections xcfConnections = new Configuration.Connections();
+
+        for (Connection connection : task.getNetwork().getConnections()) {
+            Configuration.Connections.FifoConnection fifo = new Configuration.Connections.FifoConnection();
+            fifo.setSize(4096);
+            fifo.setSource(connection.getSource().getInstance().get());
+            fifo.setTarget(connection.getTarget().getInstance().get());
+            fifo.setSourcePort(connection.getSource().getPort());
+            fifo.setTargetPort(connection.getTarget().getPort());
+            xcfConnections.getFifoConnection().add(fifo);
+        }
+
+        xcf.setConnections(xcfConnections);
+
+        try {
+            File xcfFile = new File(name);
+            ConfigurationManager.write(xcfFile, xcf);
+        } catch (JAXBException e) {
+            fatalError("Could not write the xcf file to " + name + ": " + e.getMessage());
+        }
+
     }
 }

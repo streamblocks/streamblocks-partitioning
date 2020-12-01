@@ -42,7 +42,7 @@ public class MulticoreProfileDataBase extends CommonProfileDataBase{
         public Integer getDepth() {
             return depth;
         }
-//        public Integer getDepth() { return (1 << 17); }
+
         public Integer getWidth() {
             return width;
         }
@@ -70,8 +70,13 @@ public class MulticoreProfileDataBase extends CommonProfileDataBase{
         this.tokenDb.set(connection, tokens);
     }
 
+    @Override
     public Long getInstanceTicks(Instance instance) {
-        return execDb.get(instance);
+        if (this.getExecutionProfileDataBase().contains(instance)) {
+            return this.getExecutionProfileDataBase().get(instance);
+        } else {
+            return Long.valueOf(0);
+        }
     }
 
     /**
