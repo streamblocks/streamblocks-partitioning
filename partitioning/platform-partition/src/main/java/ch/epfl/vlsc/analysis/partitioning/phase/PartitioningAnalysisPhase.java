@@ -28,6 +28,7 @@ import se.lth.cs.tycho.settings.Configuration;
 import se.lth.cs.tycho.settings.Setting;
 import se.lth.cs.tycho.compiler.Compiler;
 
+import javax.sound.sampled.Line;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.transform.OutputKeys;
 import javax.xml.transform.Transformer;
@@ -65,9 +66,9 @@ public class PartitioningAnalysisPhase implements Phase {
     GRBModel model;
     public PartitioningAnalysisPhase() {
         this.multicoreDB = null;
-        this.multicoreClockPeriod = 1.0 / 3.4 * 1e-9; // 3.4 GHz
+        this.multicoreClockPeriod = 1.0 / 0.1 * 1e-9; // 3.3 GHz
         this.accelDB = null;
-        this.accelClockPeriod = 1.0 / .185 * 1e-9; // 280 MHz
+        this.accelClockPeriod = 1.0 / .200 * 1e-9; // 250 MHz
         this.definedCoreCommProfilePath = false;
         this.definedOclProfilePath = false;
         this.definedSystemCProfilePath = false;
@@ -179,7 +180,7 @@ public class PartitioningAnalysisPhase implements Phase {
 ////        MulticorePerformanceModel perfModel = new MulticorePerformanceModel(
 ////                task, context, multicoreDB, multicoreClockPeriod, 300.0
 ////        );
-//        Path logPath = context.getConfiguration().get(Compiler.targetPath);
+//
 //
 //        maxCores = Math.min(perfModel.getMaxPartitions(), maxCores);
 //        for (int cores = 2; cores <= maxCores; cores ++) {
@@ -203,12 +204,53 @@ public class PartitioningAnalysisPhase implements Phase {
 //
 //        }
 
-        HeterogeneousModel perfModel = new HeterogeneousModel(
-                task, context, multicoreDB, accelDB, multicoreClockPeriod, accelClockPeriod, 300.0
-        );
         printStatistics();
 
-        perfModel.solveModel(maxCores);
+        PartitionSettings.Mode mode = context.getConfiguration().get(PartitionSettings.searchMode);
+        Path logPath = context.getConfiguration().get(Compiler.targetPath).resolve("homogeneous");
+
+        if (mode == PartitionSettings.Mode.HOMOGENEOUS) {
+            context.getReporter().report(new Diagnostic(
+                    Diagnostic.Kind.INFO, "HOMOGENEOUS PARTITIONING MODE"
+            ));
+
+            MulticorePerformanceModel perfModel = new MulticorePerformanceModel(
+                    task, context, multicoreDB, multicoreClockPeriod,  300.0
+            );
+
+            maxCores = Math.min(perfModel.getMaxPartitions(), maxCores);
+
+            for (int cores = 2; cores <= maxCores; cores++) {
+                ImmutableList<PerformanceModel.PartitioningSolution<String>> solutions = perfModel.solveModel(cores);
+                File configDir = logPath.resolve(String.valueOf(cores)).toFile();
+                if (!configDir.exists()) {
+                    configDir.mkdirs();
+                }
+                System.out.println("Solved the model for " + cores + " cores");
+                perfModel.solutionsSummary(configDir);
+                for (PerformanceModel.PartitioningSolution<String> solution: solutions) {
+
+                    perfModel.dumpMulticoreConfig(
+                            configDir + "/config_" + solutions.indexOf(solution) + ".xml",
+                            solution, multicoreDB);
+                }
+            }
+
+        } else if (mode == PartitionSettings.Mode.HETEROGENEOUS) {
+            context.getReporter().report(new Diagnostic(
+                    Diagnostic.Kind.INFO, "HETEROGENEOUS PARTITIONING MODE"
+            ));
+            HeterogeneousModel perfModel = new HeterogeneousModel(
+                    task, context, multicoreDB, accelDB, multicoreClockPeriod, accelClockPeriod, 300.0
+            );
+
+            for (int cores = 1; cores <= maxCores; cores++) {
+
+                perfModel.solveModel(cores);
+            }
+
+        }
+
 
 
 //        for (int cores = 2; cores <= maxCores; cores++) {

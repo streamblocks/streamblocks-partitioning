@@ -215,7 +215,8 @@ public abstract class PerformanceModel {
     }
 
 
-    public void dumpMulticoreConfig(String name, PartitioningSolution<String> partitionMap) {
+    public void dumpMulticoreConfig(String name, PartitioningSolution<String> partitionMap,
+                                    MulticoreProfileDataBase multicoreDb) {
 
 
         File configFile = new File(name);
@@ -229,11 +230,12 @@ public abstract class PerformanceModel {
             Element partitioningRoot = doc.createElement("partitioning");
             configRoot.appendChild(partitioningRoot);
 
+            ImmutableList.Builder<String> availableInstancesBuilder = ImmutableList.builder();
+
 
             for (Partition<String> partition: partitionMap.getPartitions()) {
                 ImmutableList<String> instances = partition.getInstances();
                 if (!instances.isEmpty()) {
-
                     Element partitionRoot = doc.createElement("partition");
 
                     partitionRoot.setAttribute("id", String.valueOf(partition.getPartitionType().toIndex()));
@@ -243,8 +245,61 @@ public abstract class PerformanceModel {
                         partitionRoot.appendChild(instanceRoot);
                     });
                     partitioningRoot.appendChild(partitionRoot);
+                    availableInstancesBuilder.addAll(instances);
                 }
+
             }
+
+            Element connectionsRoot = doc.createElement("connections");
+
+            ImmutableList<String> availableInstances = availableInstancesBuilder.build();
+
+            Optional<String> virtualActor = Optional.of("system_plink_0");
+            for (Connection connection : task.getNetwork().getConnections()) {
+
+                String sourceInstance = connection.getSource().getInstance().orElseThrow(
+                        () -> new CompilationException(
+                                new Diagnostic(Diagnostic.Kind.ERROR, "The network contains a " +
+                                        "dangling connection " + connection.toString())
+                        )
+                );
+                String targetInstance = connection.getTarget().getInstance().orElseThrow(
+                        () -> new CompilationException(
+                                new Diagnostic(Diagnostic.Kind.ERROR, "The network contains a " +
+                                        "dangling connection " + connection.toString())
+                        )
+                );
+
+                String sourcePort = connection.getSource().getPort();
+                String targetPort = connection.getTarget().getPort();
+                Element fifoConnectionElem = doc.createElement("fifo-connection");
+                String depth = String.valueOf(multicoreDb.getConnectionSettingsDataBase().get(connection).getDepth());
+                if (availableInstances.contains(sourceInstance) && availableInstances.contains(targetInstance)) {
+                    fifoConnectionElem.setAttribute("source", sourceInstance);
+                    fifoConnectionElem.setAttribute("target", targetInstance);
+                    fifoConnectionElem.setAttribute("source-port", sourcePort);
+                    fifoConnectionElem.setAttribute("target-port", targetPort);
+                    fifoConnectionElem.setAttribute("size", depth);
+                    connectionsRoot.appendChild(fifoConnectionElem);
+                } else if (availableInstances.contains(sourceInstance) && !availableInstances.contains(targetInstance)) {
+                    fifoConnectionElem.setAttribute("source", sourceInstance);
+                    fifoConnectionElem.setAttribute("target", virtualActor.get());
+                    fifoConnectionElem.setAttribute("source-port", sourcePort);
+                    fifoConnectionElem.setAttribute("target-port", sourceInstance + "_" + sourcePort + "_" + targetPort + "_" + targetInstance);
+                    fifoConnectionElem.setAttribute("size", depth);
+                    connectionsRoot.appendChild(fifoConnectionElem);
+                } else if (!availableInstances.contains(sourceInstance) && availableInstances.contains(targetInstance)) {
+                    fifoConnectionElem.setAttribute("source", virtualActor.get());
+                    fifoConnectionElem.setAttribute("target", targetInstance);
+                    fifoConnectionElem.setAttribute("source-port", sourceInstance + "_" + sourcePort + "_" + targetPort + "_" + targetInstance);
+                    fifoConnectionElem.setAttribute("target-port", targetPort);
+                    fifoConnectionElem.setAttribute("size", depth);
+                    connectionsRoot.appendChild(fifoConnectionElem);
+                }
+
+            }
+
+            configRoot.appendChild(connectionsRoot);
 
             StreamResult configStream = new StreamResult(configFile);
             DOMSource configDom = new DOMSource(doc);
@@ -287,17 +342,19 @@ public abstract class PerformanceModel {
         hardwarePartition.setId((short) 1);
         hardwarePartition.setPe("FPGA");
         hardwarePartition.setScheduling("FULL_PARALLEL");
-        softwarePartition.setCodeGenerator("hw");
-        softwarePartition.setHost(false);
+        hardwarePartition.setCodeGenerator("hw");
+        hardwarePartition.setHost(false);
 
 
         ImmutableList<Instance> softwareInstances = partitionMap.getPartitions()
                 .stream().filter(p -> p.getPartitionType() instanceof SoftwarePartition)
                 .flatMap(p -> p.getInstances().stream())
+                .sorted((i1, i2) -> String.CASE_INSENSITIVE_ORDER.compare(i1.getInstanceName(), i2.getInstanceName()))
                 .collect(ImmutableList.collector());
         ImmutableList<Instance> hardwareInstances = partitionMap.getPartitions()
                 .stream().filter(p -> p.getPartitionType() instanceof  HardwarePartition)
                 .flatMap(p -> p.getInstances().stream())
+                .sorted((i1, i2) -> String.CASE_INSENSITIVE_ORDER.compare(i1.getInstanceName(), i2.getInstanceName()))
                 .collect(ImmutableList.collector());
 
         for (Instance instance : softwareInstances) {

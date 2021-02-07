@@ -168,7 +168,7 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
             numberOfConnectionsExpressions.addTerm(1.0, numberOfReadConnections);
             numberOfConnectionsExpressions.addTerm(1.0, numberOfWriteConnections);
 
-            model.addConstr(numberOfConnectionsExpressions, GRB.LESS_EQUAL, 15.0,
+            model.addConstr(numberOfConnectionsExpressions, GRB.LESS_EQUAL, 15.,
                     "constraint_number_of_connections");
 
             GRBVar plinkKernelTime = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS,
@@ -322,7 +322,7 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
             }
             info("Solved the heterogeneous model for " + numberOfCores + " cores");
 
-            solutionsSummary(dumpDir);
+
 
             ImmutableList<PartitioningSolution<String>> rawSoftwareSolutions = solutions.stream().map(sol -> {
                ImmutableList<Partition<String>> swPartitions =
@@ -351,7 +351,7 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
             multicoreDumpDir.mkdirs();
             for (PartitioningSolution<String> sol : rawSoftwareSolutions) {
                 dumpMulticoreConfig(multicoreDumpDir + "/config_" + rawSoftwareSolutions.indexOf(sol) + ".xml",
-                        sol);
+                        sol, multicoreDB);
 
             }
             info("Saving xcf configurations into " + dumpDir);
