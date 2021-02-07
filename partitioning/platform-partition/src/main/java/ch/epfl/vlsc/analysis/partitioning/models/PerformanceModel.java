@@ -401,13 +401,13 @@ public abstract class PerformanceModel {
         Configuration.Connections xcfConnections = new Configuration.Connections();
 
         for (Connection connection : task.getNetwork().getConnections()) {
-            Configuration.Connections.FifoConnection fifo = new Configuration.Connections.FifoConnection();
-            fifo.setSize(4096);
-            fifo.setSource(connection.getSource().getInstance().get());
-            fifo.setTarget(connection.getTarget().getInstance().get());
-            fifo.setSourcePort(connection.getSource().getPort());
-            fifo.setTargetPort(connection.getTarget().getPort());
-            xcfConnections.getFifoConnection().add(fifo);
+//            Configuration.Connections.FifoConnection fifo = new Configuration.Connections.FifoConnection();
+//            fifo.setSize(4096);
+//            fifo.setSource(connection.getSource().getInstance().get());
+//            fifo.setTarget(connection.getTarget().getInstance().get());
+//            fifo.setSourcePort(connection.getSource().getPort());
+//            fifo.setTargetPort(connection.getTarget().getPort());
+//            xcfConnections.getFifoConnection().add(fifo);
         }
 
         xcf.setConnections(xcfConnections);

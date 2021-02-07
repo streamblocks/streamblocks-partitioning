@@ -214,17 +214,26 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
                 GRBLinExpr partitionTimeExpression = getPartitionTimeExpression(partition, instanceDecisionVariables,
                         task.getNetwork().getInstances());
 
-                if (partition.equals(plinkPartition)) {
-                    partitionTimeExpression.addTerm(1.0, plinkTime);
-                }
 
                 GRBVar partitionExecTime = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS,
                         "T_exec_" + partition.toString());
-                model.addConstr(partitionExecTime, GRB.EQUAL, partitionTimeExpression,
-                        "constraint_T_exec_" + partition.toString());
+                if (partition.equals(plinkPartition)) {
+                    GRBVar plinkCoreTime = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS,
+                            "T_exec_"  + partition.toString() + "_core");
+                    GRBVar [] args = {
+                            plinkCoreTime, plinkTime
+                    };
+                    model.addGenConstrMax(partitionExecTime, args, 0.0,
+                            "constraint_T_exec_" + partition.toString());
+
+                } else {
+                    model.addConstr(partitionExecTime, GRB.EQUAL, partitionTimeExpression,
+                            "constraint_T_exec_" + partition.toString());
+                }
 
                 partitionExecTimeList.add(partitionExecTime);
             }
+
 
             GRBVar[] partitionExecTimeArray = partitionExecTimeList.toArray(new GRBVar[softwarePartitions.size()]);
             GRBVar executionTime = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS, "T_exec");
