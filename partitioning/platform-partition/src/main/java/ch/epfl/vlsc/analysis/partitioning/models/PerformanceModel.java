@@ -40,7 +40,7 @@ public abstract class PerformanceModel {
     GRBModel model;
 
 
-    public class HardwarePartition implements TypedPartition {
+    public static class HardwarePartition implements TypedPartition {
 
         private final int index;
         public HardwarePartition(int i) {
@@ -57,7 +57,7 @@ public abstract class PerformanceModel {
         }
     }
 
-    public class SoftwarePartition implements TypedPartition {
+    public static class SoftwarePartition implements TypedPartition {
         private final int index;
         public SoftwarePartition(int index) {
             this.index = index;
@@ -78,7 +78,7 @@ public abstract class PerformanceModel {
         public abstract String toString();
     }
 
-    public class Partition<T> {
+    public static class Partition<T> {
 
         private final ImmutableList<T> instances;
         private final TypedPartition ptype;
@@ -97,7 +97,7 @@ public abstract class PerformanceModel {
 
     }
 
-    public class PartitioningSolution<T> {
+    public static class PartitioningSolution<T> {
         private final ImmutableList<Partition<T>> partitions;
         public PartitioningSolution(ImmutableList<Partition<T>> partitions) {
             this.partitions = partitions;
@@ -208,7 +208,7 @@ public abstract class PerformanceModel {
                 new Diagnostic(Diagnostic.Kind.ERROR, message)
         );
     }
-    protected void fatalError(String message) {
+    protected static void fatalError(String message) {
         throw new CompilationException(new Diagnostic(
                 Diagnostic.Kind.ERROR, message
         ));
@@ -316,8 +316,8 @@ public abstract class PerformanceModel {
 
     }
 
-    public void dumpXcfConfig(String name, PartitioningSolution<Instance> partitionMap,
-                              Map<Connection, Integer> bufferDepthMap) {
+    public static void dumpXcfConfig(String name, PartitioningSolution<Instance> partitionMap,
+                              Map<Connection, Integer> bufferDepthMap, CompilationTask task) {
 
         Configuration xcf = new Configuration();
 

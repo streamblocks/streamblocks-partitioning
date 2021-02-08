@@ -3,13 +3,13 @@ package ch.epfl.vlsc.analysis.partitioning.phase;
 import ch.epfl.vlsc.analysis.partitioning.models.HeterogeneousModel;
 import ch.epfl.vlsc.analysis.partitioning.models.MulticorePerformanceModel;
 import ch.epfl.vlsc.analysis.partitioning.models.PerformanceModel;
-import ch.epfl.vlsc.analysis.partitioning.models.PinnedHardwareModel;
+
 import ch.epfl.vlsc.analysis.partitioning.parser.*;
 import ch.epfl.vlsc.analysis.partitioning.util.PartitionSettings;
 
+import ch.epfl.vlsc.analysis.partitioning.util.SolutionIdentity;
+import com.google.gson.*;
 import gurobi.*;
-
-import org.w3c.dom.*;
 
 
 import se.lth.cs.tycho.compiler.CompilationTask;
@@ -18,7 +18,7 @@ import se.lth.cs.tycho.compiler.Context;
 
 import se.lth.cs.tycho.ir.network.Connection;
 import se.lth.cs.tycho.ir.network.Instance;
-import se.lth.cs.tycho.ir.network.Network;
+
 import se.lth.cs.tycho.ir.util.ImmutableList;
 import se.lth.cs.tycho.phase.Phase;
 import se.lth.cs.tycho.reporting.CompilationException;
@@ -28,20 +28,13 @@ import se.lth.cs.tycho.settings.Configuration;
 import se.lth.cs.tycho.settings.Setting;
 import se.lth.cs.tycho.compiler.Compiler;
 
-import javax.sound.sampled.Line;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.transform.OutputKeys;
-import javax.xml.transform.Transformer;
-import javax.xml.transform.TransformerFactory;
-import javax.xml.transform.dom.DOMSource;
-import javax.xml.transform.stream.StreamResult;
 import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileWriter;
-import java.io.PrintWriter;
 
+import java.io.FileWriter;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public class PartitioningAnalysisPhase implements Phase {
@@ -66,9 +59,9 @@ public class PartitioningAnalysisPhase implements Phase {
     GRBModel model;
     public PartitioningAnalysisPhase() {
         this.multicoreDB = null;
-        this.multicoreClockPeriod = 1.0 / 0.1 * 1e-9; // 3.3 GHz
+        this.multicoreClockPeriod = 1.0 / 3.3 * 1e-9; // 3.3 GHz
         this.accelDB = null;
-        this.accelClockPeriod = 1.0 / .200 * 1e-9; // 250 MHz
+        this.accelClockPeriod = 1.0 / .250 * 1e-9; // 250 MHz
         this.definedCoreCommProfilePath = false;
         this.definedOclProfilePath = false;
         this.definedSystemCProfilePath = false;
@@ -147,6 +140,8 @@ public class PartitioningAnalysisPhase implements Phase {
 
     }
 
+
+
     @Override
     public CompilationTask execute(CompilationTask task, Context context) throws CompilationException {
 
@@ -174,35 +169,6 @@ public class PartitioningAnalysisPhase implements Phase {
 
 
 
-//        PinnedHardwareModel perfModel = new PinnedHardwareModel(
-//                task, context, multicoreDB, accelDB, multicoreClockPeriod, accelClockPeriod, 300.0
-//        );
-////        MulticorePerformanceModel perfModel = new MulticorePerformanceModel(
-////                task, context, multicoreDB, multicoreClockPeriod, 300.0
-////        );
-//
-//
-//        maxCores = Math.min(perfModel.getMaxPartitions(), maxCores);
-//        for (int cores = 2; cores <= maxCores; cores ++) {
-////            printStatistics();
-////            perfModel.reportHardwareConsumptionProductions();
-//            System.out.println("Hardware kernel time: " + perfModel.getPlinkKernelCost2() + ", " + perfModel.getPlinkKernelCost());
-//            System.out.println("Plink read: " + perfModel.getPlinkReadCost() + ", Plink write: " + perfModel.getPlinkWriteCost());
-//            ImmutableList<PerformanceModel.PartitioningSolution<String>> solutions = perfModel.solveModel(cores);
-//            File configDir = logPath.resolve(String.valueOf(cores)).toFile();
-//            if (!configDir.exists()) {
-//                configDir.mkdirs();
-//            }
-//            System.out.println("Solved the model for " + cores + " cores");
-//            perfModel.solutionsSummary(configDir);
-//            for (PerformanceModel.PartitioningSolution<String> solution: solutions) {
-//
-//                perfModel.dumpMulticoreConfig(
-//                        configDir + "/config_" + solutions.indexOf(solution) + ".xml",
-//                        solution);
-//            }
-//
-//        }
 
         printStatistics();
 
@@ -244,71 +210,155 @@ public class PartitioningAnalysisPhase implements Phase {
                     task, context, multicoreDB, accelDB, multicoreClockPeriod, accelClockPeriod, 300.0
             );
 
+            Map<SolutionIdentity, Integer> solutionToUniqueHwMap = new TreeMap<>(
+                    (t1, t2) -> {
+                        if (t1.numberOfCores < t2.numberOfCores) {
+                            return -1;
+                        } else if (t1.numberOfCores > t2.numberOfCores) {
+                            return 1;
+                        } else {
+                            return t1.solutionNumber - t2.solutionNumber;
+                        }
+                    }
+            );
+            Set<Set<String>> uniqueHardwarePartitions = new HashSet<>();
             for (int cores = 1; cores <= maxCores; cores++) {
 
-                perfModel.solveModel(cores);
+                ImmutableList<PerformanceModel.PartitioningSolution<String>> solutions = perfModel.solveModel(cores);
+
+                // Find the hardware partition for every solution and add the hardware partition to the
+                // set of unique hardware partitions and update a map from solution ids to unique hw partitions
+                // sets
+                int newSolutions = 0;
+                for(PerformanceModel.PartitioningSolution<String> sol : solutions) {
+                    int solNumber = solutions.indexOf(sol);
+                    Set<String> hwActors = sol.getPartitions().stream()
+                            .filter(p -> p.getPartitionType() instanceof PerformanceModel.HardwarePartition)
+                            .flatMap(p -> p.getInstances().stream()).collect(Collectors.toSet());
+                    solutionToUniqueHwMap.put(new SolutionIdentity(cores, solNumber), hwActors.hashCode());
+                    if (!uniqueHardwarePartitions.contains(hwActors)){
+                        newSolutions ++;
+                    }
+                    uniqueHardwarePartitions.add(hwActors);
+                }
+
+                context.getReporter().report(
+                        new Diagnostic(Diagnostic.Kind.INFO, "Found new " + newSolutions +
+                                " hardware partitions with " + cores + " cores")
+                );
+
             }
 
+            context.getReporter().report(
+                    new Diagnostic(
+                            Diagnostic.Kind.INFO, "Found total of " + uniqueHardwarePartitions.size() +
+                            " unique hardware partitions"
+                    )
+            );
+            // keep the mappings from solutions to unique hardware partitions.
+            try {
+                String jsonFileName = context.getConfiguration().get(Compiler.targetPath).resolve("hardware.json")
+                        .toAbsolutePath().toString();
+                dumpUniqueHardwarePartitionJson(solutionToUniqueHwMap, jsonFileName);
+            } catch (IOException e) {
+                context.getReporter().report(new Diagnostic(
+                        Diagnostic.Kind.ERROR, "Could not save the unique hardware partition mappings"
+                ));
+            }
+
+            // create the unique xcf files
+            Map<Connection, Integer> bufferDepth = task.getNetwork().getConnections().stream()
+                    .collect(Collectors.toMap(
+                            Function.identity(),
+                            c -> this.multicoreDB.getConnectionSettingsDataBase().get(c).getDepth()
+                    ));
+            File uniqueHardwareDir = new File(
+                    context.getConfiguration().get(Compiler.targetPath).resolve("unique").toUri());
+            uniqueHardwareDir.mkdirs();
+
+            ImmutableList<Integer> hashCodes = solutionToUniqueHwMap.values().stream().sorted()
+                    .collect(ImmutableList.collector());
+
+            // dump unique xcf files
+            for (Set<String> hardwareActorsNames : uniqueHardwarePartitions) {
+
+                int hashCode = hardwareActorsNames.hashCode();
+                int hashIndex = hashCodes.indexOf(hashCode);
+
+                ImmutableList<Instance> hardwareActors = task.getNetwork().getInstances().stream()
+                        .filter(p -> hardwareActorsNames.contains(p.getInstanceName()))
+                        .collect(ImmutableList.collector());
+                ImmutableList<Instance> softwareActors = task.getNetwork().getInstances().stream()
+                        .filter(p -> !hardwareActors.contains(p))
+                        .collect(ImmutableList.collector());
+
+                PerformanceModel.Partition<Instance> hwPartition = new PerformanceModel.Partition<>(
+                        hardwareActors, new PerformanceModel.HardwarePartition(1));
+                PerformanceModel.Partition<Instance> swPartition = new PerformanceModel.Partition<>(
+                        softwareActors, new PerformanceModel.SoftwarePartition(0));
+                ImmutableList.Builder<PerformanceModel.Partition<Instance>> partitions = ImmutableList.builder();
+                partitions.add(swPartition);
+                partitions.add(hwPartition);
+                PerformanceModel.PartitioningSolution<Instance> sol =
+                        new PerformanceModel.PartitioningSolution<>(partitions.build());
+
+                String xcfName = uniqueHardwareDir.toPath()
+                        .resolve(hashIndex + "_" + hashCode + ".xcf").toAbsolutePath().toString();
+                PerformanceModel.dumpXcfConfig(xcfName, sol,bufferDepth, task);
+            }
+
+
         }
-
-
-
-//        for (int cores = 2; cores <= maxCores; cores++) {
-//
-//            Long startTime = System.currentTimeMillis();
-//
-//            ImmutableList<Map<String, List<Instance>>> solutions = solveModel(task, context, cores);
-//            Long elapsedTime = System.currentTimeMillis() - startTime;
-//            System.out.printf("Found solution in %d s.\n", elapsedTime);
-//            int id = 0;
-//
-//            Path dumpPath =
-//                    context.getConfiguration().isDefined(PartitionSettings.configPath) ?
-//                            context.getConfiguration().get(PartitionSettings.configPath) :
-//                            context.getConfiguration().get(Compiler.targetPath).resolve("bin/" + cores);
-//
-//
-//            File dumpDir = new File(dumpPath.toUri());
-//
-//            if (!dumpDir.exists())
-//                dumpDir.mkdirs();
-//
-//            File dumpFile = new File(dumpDir + "/solutions.csv");
-//
-//            try {
-//                PrintWriter solutionWriter = new PrintWriter(dumpFile);
-//                solutionWriter.println("T,T_network,T_lc,T_cc,T_ca,T_plink_kernel,T_plink_read,T_plink_write");
-//                for (Map<String, List<Instance>> partitions : solutions) {
-//
-//                    try {
-//                        model.set(GRB.IntParam.SolutionNumber, id);
-//                        Double estimated_time = model.getVarByName("T").get(GRB.DoubleAttr.Xn);
-//                        System.out.printf("Solution %d (%f s)\n", id, estimated_time);
-//                        reportPartition(partitions);
-//
-//                        printTimingBreakdown(id, solutionWriter);
-//                        createConfig(partitions, context, id, cores);
-//                        id++;
-//                    } catch (GRBException e) {
-//                        context.getReporter().report(new Diagnostic(Diagnostic.Kind.ERROR, "Could not get solution " + id));
-//                        e.printStackTrace();
-//                    }
-//
-//                }
-//                solutionWriter.close();
-//            } catch (FileNotFoundException e) {
-//                context.getReporter().report(new Diagnostic(Diagnostic.Kind.ERROR, "Could not create file " + dumpFile.toString()));
-//            }
-//        }
-
-
-
 
 
         return task;
     }
 
 
+    private void dumpUniqueHardwarePartitionJson(Map<SolutionIdentity, Integer> solutionToUniqueHwMap, String fileName)
+            throws IOException {
+        // dump a mapping from solution ids to unique hardware sets (as hash codes)
+        JsonArray jArray = new JsonArray();
+        /**
+         * The solution mappings are serialized in a json as follows:
+         * {
+         *    solutions: [
+         *      {
+         *          "cores": CORE_COUNT,
+         *          "index": SOLUTION_INDEX,
+         *          "hash" : HASH_CODE
+         *      },...
+         *    ]
+         * }
+         */
+        ImmutableList<Integer> hashCodes = solutionToUniqueHwMap.values().stream().sorted()
+                .collect(ImmutableList.collector());
+
+        for (SolutionIdentity sol : solutionToUniqueHwMap.keySet()) {
+            int hashCode = solutionToUniqueHwMap.get(sol);
+            int hashIndex = hashCodes.indexOf(hashCode);
+            JsonObject jElem = new JsonObject();
+            jElem.addProperty("cores", sol.numberOfCores);
+            jElem.addProperty("index", sol.solutionNumber);
+            jElem.addProperty("hash", hashCode);
+            jElem.addProperty("hash_index", hashIndex);
+            jArray.add(jElem);
+
+        }
+        JsonObject jObject = new JsonObject();
+        jObject.addProperty("count", jArray.size());
+        jObject.add("solutions", jArray);
+
+        Gson gson = new GsonBuilder().setPrettyPrinting().create();
+        FileWriter writer = new FileWriter(fileName);
+        gson.toJson(jObject, writer);
+        writer.flush();
+        context.getReporter().report(new Diagnostic(
+                Diagnostic.Kind.INFO, "Saved the unique hardware mappings to " + fileName
+        ));
+
+
+    }
 
     private void printStatistics() {
 

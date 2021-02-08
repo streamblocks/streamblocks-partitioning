@@ -1,4 +1,4 @@
-package ch.epfl.vlsc.analysis.partitioning.paltforms;
+package ch.epfl.vlsc.analysis.partitioning.platforms;
 
 import ch.epfl.vlsc.analysis.partitioning.phase.PartitioningAnalysisPhase;
 import se.lth.cs.tycho.compiler.Compiler;
