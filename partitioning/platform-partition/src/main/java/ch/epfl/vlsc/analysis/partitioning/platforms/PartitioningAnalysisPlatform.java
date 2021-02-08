@@ -11,28 +11,27 @@ import java.util.List;
 
 public class PartitioningAnalysisPlatform implements Platform {
 
-    @Override
-    public String name() {
-        return "partition";
-    }
+  @Override
+  public String name() {
+    return "partition";
+  }
 
-    @Override
-    public String description() {
-        return "StreamBlocks partition analysis using ILP.";
-    }
+  @Override
+  public String description() {
+    return "StreamBlocks partition analysis using ILP.";
+  }
 
+  private static final List<Phase> phases =
+      ImmutableList.<Phase>builder()
+          .addAll(Compiler.frontendPhases())
+          .addAll(Compiler.networkElaborationPhases())
+          .add(new VerilogNameCheckerPhase())
+          .add(new XcfAnnotationPhase())
+          .add(new PartitioningAnalysisPhase())
+          .build();
 
-    private static final List<Phase> phases = ImmutableList.<Phase>builder()
-            .addAll(Compiler.frontendPhases())
-            .addAll(Compiler.networkElaborationPhases())
-            .add(new VerilogNameCheckerPhase())
-            .add(new XcfAnnotationPhase())
-            .add(new PartitioningAnalysisPhase())
-            .build();
-
-    @Override
-    public List<Phase> phases() {
-        return phases;
-    }
-
+  @Override
+  public List<Phase> phases() {
+    return phases;
+  }
 }

@@ -5,8 +5,10 @@ import ch.epfl.vlsc.analysis.partitioning.models.MulticorePerformanceModel;
 import ch.epfl.vlsc.analysis.partitioning.models.PerformanceModel;
 
 import ch.epfl.vlsc.analysis.partitioning.parser.*;
+import ch.epfl.vlsc.analysis.partitioning.util.JsonConfiguration;
 import ch.epfl.vlsc.analysis.partitioning.util.PartitionSettings;
 
+import ch.epfl.vlsc.analysis.partitioning.util.ProfileData;
 import ch.epfl.vlsc.analysis.partitioning.util.SolutionIdentity;
 import com.google.gson.*;
 import gurobi.*;
@@ -28,9 +30,11 @@ import se.lth.cs.tycho.compiler.Compiler;
 
 import java.io.File;
 
+import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -46,30 +50,13 @@ public class PartitioningAnalysisPhase implements Phase {
   Double accelClockPeriod; // in NS
   Double timeLimit;
 
-  boolean definedMulticoreProfilePath;
-  boolean definedSystemCProfilePath;
-
-  boolean definedOclProfilePath;
-  boolean definedCoreCommProfilePath;
-
-  private final String plinkPartition;
-  private final String accelPartition;
-  GRBModel model;
-
   public PartitioningAnalysisPhase() {
     this.multicoreDB = null;
-    this.multicoreClockPeriod = 1.0 / 3.3 * 1e-9; // 3.3 GHz
+    this.multicoreClockPeriod = 0.0;
     this.accelDB = null;
-    this.accelClockPeriod = 1.0 / .250 * 1e-9; // 250 MHz
-    this.definedCoreCommProfilePath = false;
-    this.definedOclProfilePath = false;
-    this.definedSystemCProfilePath = false;
-    this.definedMulticoreProfilePath = false;
+    this.accelClockPeriod = 0.0;
 
     this.timeLimit = 300.0;
-
-    this.plinkPartition = "core_0";
-    this.accelPartition = "accel";
   }
 
   @Override
@@ -79,68 +66,141 @@ public class PartitioningAnalysisPhase implements Phase {
 
   @Override
   public List<Setting<?>> getPhaseSettings() {
-    return ImmutableList.of(
-        PartitionSettings.multiCoreProfilePath,
-        PartitionSettings.systemCProfilePath,
-        PartitionSettings.openCLProfilePath,
-        PartitionSettings.multicoreCommunicationProfilePath,
-        PartitionSettings.configPath,
-        PartitionSettings.cpuCoreCount,
-        PartitionSettings.searchMode);
+    return ImmutableList.of(PartitionSettings.jsonConfig);
   }
 
-  private void getRequiredSettings(CompilationTask task, Context context)
-      throws CompilationException {
-
-    Configuration configs = context.getConfiguration();
-    Reporter reporter = context.getReporter();
-    this.definedMulticoreProfilePath = configs.isDefined(PartitionSettings.multiCoreProfilePath);
-    this.definedSystemCProfilePath = configs.isDefined(PartitionSettings.systemCProfilePath);
-    this.definedOclProfilePath = configs.isDefined(PartitionSettings.openCLProfilePath);
-    this.definedCoreCommProfilePath =
-        configs.isDefined(PartitionSettings.multicoreCommunicationProfilePath);
-    //        this.definedCoreCommProfilePath = true;
-    if (!this.definedMulticoreProfilePath) {
-      throw new CompilationException(
-          new Diagnostic(
-              Diagnostic.Kind.ERROR,
-              String.format(
-                  "Multicore profile path is not specified! use "
-                      + "--set %s=<PATH TO XML FILE> to set the profiling path",
-                  PartitionSettings.multiCoreProfilePath)));
+  private JsonConfiguration parseConfig(CompilationTask task, Context context) {
+    if (!context.getConfiguration().isDefined(PartitionSettings.jsonConfig)) {
+      return null;
     }
-    if (!this.definedSystemCProfilePath) {
+    Path jsonPath = context.getConfiguration().get(PartitionSettings.jsonConfig);
+    try {
+      Gson gson = new Gson();
+      FileReader reader = new FileReader(jsonPath.toFile());
+      JsonConfiguration jConfig = gson.fromJson(reader, JsonConfiguration.class);
 
-      reporter.report(
-          new Diagnostic(
-              Diagnostic.Kind.WARNING,
-              String.format(
-                  "%s not specified, "
-                      + "the partitioning will not contain an FPGA partition, "
-                      + "set the value using --set %1$s=<PATH TO XML FILE>",
-                  PartitionSettings.systemCProfilePath.getKey())));
+      reader.close();
+      return jConfig;
+
+    } catch (IOException e) {
+      context
+          .getReporter()
+          .report(
+              new Diagnostic(
+                  Diagnostic.Kind.ERROR,
+                  "Could not parse json configuration file " + jsonPath + ":\n" + e.getMessage()));
     }
+    return null;
+  }
 
-    if (!this.definedOclProfilePath) {
+  private void checkProfileData(String name, ProfileData pdata) {
 
-      reporter.report(
-          new Diagnostic(
-              Diagnostic.Kind.WARNING,
-              String.format(
-                  "%s is not specified, the partitioning may be inaccurate. Use"
-                      + "--set %1$s=<PATH TO XML FILE>",
-                  PartitionSettings.openCLProfilePath.getKey())));
+    if (pdata.multiplier == null) {
+      context
+          .getReporter()
+          .report(
+              new Diagnostic(
+                  Diagnostic.Kind.WARNING,
+                  "In " + name + " multiplier is undefined, setting it to 1.0"));
+      pdata.multiplier = 1.0;
     }
+    if (pdata.freq == null) {
+      context
+          .getReporter()
+          .report(new Diagnostic(Diagnostic.Kind.ERROR, "In  " + name + " freq is not defined!"));
+    }
+    if (pdata.path == null) {
+      context
+          .getReporter()
+          .report(new Diagnostic(Diagnostic.Kind.ERROR, "In  " + name + " path is not defined!"));
+    } else {
+      File profileFile = new File(pdata.path);
+      if (!profileFile.exists()) {
+        context
+            .getReporter()
+            .report(
+                new Diagnostic(
+                    Diagnostic.Kind.ERROR,
+                    "In "
+                        + name
+                        + " file "
+                        + profileFile.toPath().toAbsolutePath()
+                        + " does not exist"));
+      }
+    }
+  }
 
-    if (!this.definedCoreCommProfilePath) {
+  private void setConfig(JsonConfiguration jConfig) {
 
-      reporter.report(
-          new Diagnostic(
-              Diagnostic.Kind.WARNING,
-              String.format(
-                  "%s is not specified, the partitioning may be inaccurate. Use"
-                      + "--set %1$s=<PATH TO XML FILE>",
-                  PartitionSettings.multicoreCommunicationProfilePath.getKey())));
+    context.getReporter().report(new Diagnostic(Diagnostic.Kind.INFO, "Checking JSON config"));
+
+    if (jConfig.mode == null) {
+      context.getReporter().report(new Diagnostic(Diagnostic.Kind.ERROR, "mode is undefined!"));
+    }
+    if (jConfig.cores == 0) {
+      context.getReporter().report(new Diagnostic(Diagnostic.Kind.ERROR, "cores is undefined!"));
+    }
+    if (jConfig.name == null) {
+      context
+          .getReporter()
+          .report(new Diagnostic(Diagnostic.Kind.WARNING, "Configuration is not named!"));
+    }
+    switch (jConfig.mode) {
+      case HETEROGENEOUS:
+        if (jConfig.systemc == null) {
+          context
+              .getReporter()
+              .report(new Diagnostic(Diagnostic.Kind.ERROR, "systemc is undefined!"));
+        }
+        checkProfileData("systemc", jConfig.systemc);
+        this.accelClockPeriod = 1 / jConfig.systemc.freq * 1e-6;
+
+        if (jConfig.opencl == null) {
+          context
+              .getReporter()
+              .report(new Diagnostic(Diagnostic.Kind.ERROR, "opencl is undefined!"));
+        }
+
+        checkProfileData("opencl", jConfig.opencl);
+
+        DeviceProfileParser devParser = new DeviceProfileParser(task, context);
+        devParser.parseExecutionProfile(Paths.get(jConfig.systemc.path));
+        devParser.parseBandwidthProfile(Paths.get(jConfig.opencl.path));
+
+        this.accelDB = devParser.getDataBase();
+
+      case HOMOGENEOUS:
+        if (jConfig.bandwidth == null) {
+          context
+              .getReporter()
+              .report(new Diagnostic(Diagnostic.Kind.ERROR, "bandwidth is undefined!"));
+        }
+
+        checkProfileData("bandwidth", jConfig.bandwidth);
+
+        if (jConfig.software == null) {
+          context
+              .getReporter()
+              .report(new Diagnostic(Diagnostic.Kind.ERROR, "software is undefined!"));
+        }
+
+        checkProfileData("software", jConfig.software);
+        this.multicoreClockPeriod = 1 / jConfig.software.freq * 1e-6;
+
+        MulticoreProfileParser multicoreParser =
+            new MulticoreProfileParser(task, context, this.multicoreClockPeriod);
+        multicoreParser.parseExecutionProfile(Paths.get(jConfig.software.path));
+        multicoreParser.parseBandwidthProfile(Paths.get(jConfig.bandwidth.path));
+        this.multicoreDB = multicoreParser.getDataBase();
+
+        break;
+      case PINNED_HETEROGENEOUS:
+        context
+            .getReporter()
+            .report(
+                new Diagnostic(
+                    Diagnostic.Kind.ERROR, "pinned_heterogeneous mode is not implemented yet"));
+        break;
     }
   }
 
@@ -150,33 +210,15 @@ public class PartitioningAnalysisPhase implements Phase {
 
     this.context = context;
     this.task = task;
-    getRequiredSettings(task, context);
-    MulticoreProfileParser multicoreParser =
-        new MulticoreProfileParser(task, context, this.multicoreClockPeriod);
-    multicoreParser.parseExecutionProfile(
-        context.getConfiguration().get(PartitionSettings.multiCoreProfilePath));
-    if (this.definedCoreCommProfilePath) {
-      multicoreParser.parseBandwidthProfile(
-          context.getConfiguration().get(PartitionSettings.multicoreCommunicationProfilePath));
-    }
-    DeviceProfileParser devParser = new DeviceProfileParser(task, context);
 
-    if (this.definedSystemCProfilePath) {
-      devParser.parseExecutionProfile(
-          context.getConfiguration().get(PartitionSettings.systemCProfilePath));
-      if (this.definedOclProfilePath) {
-        devParser.parseBandwidthProfile(
-            context.getConfiguration().get(PartitionSettings.openCLProfilePath));
-      }
-    }
-    this.multicoreDB = multicoreParser.getDataBase();
-    this.accelDB = devParser.getDataBase();
+    JsonConfiguration jConfig = parseConfig(task, context);
+    setConfig(jConfig);
 
-    int maxCores = context.getConfiguration().get(PartitionSettings.cpuCoreCount);
+    int maxCores = jConfig.cores;
 
     printStatistics();
 
-    PartitionSettings.Mode mode = context.getConfiguration().get(PartitionSettings.searchMode);
+    PartitionSettings.Mode mode = jConfig.mode;
     Path logPath = context.getConfiguration().get(Compiler.targetPath).resolve("homogeneous");
 
     if (mode == PartitionSettings.Mode.HOMOGENEOUS) {
