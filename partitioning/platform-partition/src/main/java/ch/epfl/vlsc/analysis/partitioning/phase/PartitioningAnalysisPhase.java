@@ -254,7 +254,7 @@ public class PartitioningAnalysisPhase implements Phase {
       HeterogeneousModel perfModel =
           new HeterogeneousModel(
               task, context, multicoreDB, accelDB, multicoreClockPeriod, accelClockPeriod, 300.0);
-
+      int solutionCount = 0;
       Map<SolutionIdentity, Integer> solutionToUniqueHwMap =
           new TreeMap<>(
               (t1, t2) -> {
@@ -266,7 +266,7 @@ public class PartitioningAnalysisPhase implements Phase {
                   return t1.solutionNumber - t2.solutionNumber;
                 }
               });
-      Set<Set<String>> uniqueHardwarePartitions = new HashSet<>();
+      List<Set<String>> uniqueHardwarePartitions = new ArrayList<>();
       for (int cores = 1; cores <= maxCores; cores++) {
 
         ImmutableList<PerformanceModel.PartitioningSolution<String>> solutions =
@@ -285,10 +285,20 @@ public class PartitioningAnalysisPhase implements Phase {
                   .flatMap(p -> p.getInstances().stream())
                   .collect(Collectors.toSet());
           solutionToUniqueHwMap.put(new SolutionIdentity(cores, solNumber), hwActors.hashCode());
+          int hashIndex = -2;
           if (!uniqueHardwarePartitions.contains(hwActors)) {
-            newSolutions++;
+
+            uniqueHardwarePartitions.add(hwActors);
+            hashIndex = solutionCount;
+            newSolutions ++;
+            solutionCount ++;
+
+          } else {
+            hashIndex = uniqueHardwarePartitions.indexOf(hwActors);
+
           }
-          uniqueHardwarePartitions.add(hwActors);
+          solutionToUniqueHwMap.put(new SolutionIdentity(cores, solNumber), hashIndex);
+
         }
 
         context
@@ -343,8 +353,8 @@ public class PartitioningAnalysisPhase implements Phase {
       // dump unique xcf files
       for (Set<String> hardwareActorsNames : uniqueHardwarePartitions) {
 
-        int hashCode = hardwareActorsNames.hashCode();
-        int hashIndex = hashCodes.indexOf(hashCode);
+
+        int hashIndex = uniqueHardwarePartitions.indexOf(hardwareActorsNames);
 
         ImmutableList<Instance> hardwareActors =
             task.getNetwork().getInstances().stream()
@@ -371,7 +381,7 @@ public class PartitioningAnalysisPhase implements Phase {
         String xcfName =
             uniqueHardwareDir
                 .toPath()
-                .resolve(hashIndex + "_" + hashCode + ".xcf")
+                .resolve("unique_" + hashIndex + ".xcf")
                 .toAbsolutePath()
                 .toString();
         PerformanceModel.dumpXcfConfig(xcfName, sol, bufferDepth, task);
@@ -393,12 +403,11 @@ public class PartitioningAnalysisPhase implements Phase {
         solutionToUniqueHwMap.values().stream().sorted().collect(ImmutableList.collector());
 
     for (SolutionIdentity sol : solutionToUniqueHwMap.keySet()) {
-      int hashCode = solutionToUniqueHwMap.get(sol);
-      int hashIndex = hashCodes.indexOf(hashCode);
+
+      int hashIndex = solutionToUniqueHwMap.get(sol);
       JsonObject jElem = new JsonObject();
       jElem.addProperty("cores", sol.numberOfCores);
       jElem.addProperty("index", sol.solutionNumber);
-      jElem.addProperty("hash", hashCode);
       jElem.addProperty("hash_index", hashIndex);
       jArray.add(jElem);
     }
