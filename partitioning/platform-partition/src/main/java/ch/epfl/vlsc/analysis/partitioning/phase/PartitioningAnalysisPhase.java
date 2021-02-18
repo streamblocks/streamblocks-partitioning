@@ -11,7 +11,7 @@ import ch.epfl.vlsc.analysis.partitioning.util.PartitionSettings;
 import ch.epfl.vlsc.analysis.partitioning.util.ProfileData;
 import ch.epfl.vlsc.analysis.partitioning.util.SolutionIdentity;
 import com.google.gson.*;
-import gurobi.*;
+
 
 import se.lth.cs.tycho.compiler.CompilationTask;
 import se.lth.cs.tycho.compiler.Context;
@@ -23,8 +23,7 @@ import se.lth.cs.tycho.ir.util.ImmutableList;
 import se.lth.cs.tycho.phase.Phase;
 import se.lth.cs.tycho.reporting.CompilationException;
 import se.lth.cs.tycho.reporting.Diagnostic;
-import se.lth.cs.tycho.reporting.Reporter;
-import se.lth.cs.tycho.settings.Configuration;
+
 import se.lth.cs.tycho.settings.Setting;
 import se.lth.cs.tycho.compiler.Compiler;
 

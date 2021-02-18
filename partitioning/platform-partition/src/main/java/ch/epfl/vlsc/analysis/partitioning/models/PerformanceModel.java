@@ -315,7 +315,7 @@ public abstract class PerformanceModel {
           fifoConnectionElem.setAttribute("source-port", sourcePort);
           fifoConnectionElem.setAttribute(
               "target-port",
-              sourceInstance + "_" + sourcePort + "_" + targetPort + "_" + targetInstance);
+              sourceInstance + "_" + sourcePort + "_" + targetInstance + "_" + targetPort);
           fifoConnectionElem.setAttribute("size", depth);
           connectionsRoot.appendChild(fifoConnectionElem);
         } else if (!availableInstances.contains(sourceInstance)
@@ -324,7 +324,7 @@ public abstract class PerformanceModel {
           fifoConnectionElem.setAttribute("target", targetInstance);
           fifoConnectionElem.setAttribute(
               "source-port",
-              sourceInstance + "_" + sourcePort + "_" + targetPort + "_" + targetInstance);
+              sourceInstance + "_" + sourcePort + "_" + targetInstance + "_" + targetPort);
           fifoConnectionElem.setAttribute("target-port", targetPort);
           fifoConnectionElem.setAttribute("size", depth);
           connectionsRoot.appendChild(fifoConnectionElem);
