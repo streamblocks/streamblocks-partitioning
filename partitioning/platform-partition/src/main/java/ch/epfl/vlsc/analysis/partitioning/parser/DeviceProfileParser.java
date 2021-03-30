@@ -112,15 +112,13 @@ public class DeviceProfileParser {
                             Long kernel_ns_total = Long.valueOf(conElem.getAttribute("kernel-total"));
                             Long read_ns_total = Long.valueOf(conElem.getAttribute("read-total"));
                             Long write_ns_total = Long.valueOf(conElem.getAttribute("write-total"));
-                            Long read_size_ns_total = Long.valueOf(conElem.getAttribute("read-size-total"));
-                            Long repeats = Long.valueOf(conElem.getAttribute("repeats"));
                             Long bufferSize = Long.valueOf(conElem.getAttribute("buffer-size"));
                             this.db.setPCIeTicks(bufferSize,
                                     new DeviceProfileDataBase.PCIeTicks(read_ns_total,
-                                            read_size_ns_total,
+                                            Long.valueOf(0),
                                             write_ns_total,
                                             kernel_ns_total,
-                                            repeats));
+                                            Long.valueOf(1)));
 
                         }
                     }

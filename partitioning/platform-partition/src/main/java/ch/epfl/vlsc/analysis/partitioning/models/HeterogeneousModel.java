@@ -134,33 +134,39 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
             uniquePartitionExpression, GRB.EQUAL, 1.0, i.getInstanceName() + "_unique_partition");
       }
 
-      // make sure every core is used
+      // make sure every partition is used
       for (TypedPartition p : partitions) {
-
         // -- we want to make sure that every partition has at least one actor in it,
         // the plink partition can exceptionally have no real actors and only contain the plink
-        if (p instanceof SoftwarePartition) {
-          GRBLinExpr actorInPartitionExpr = new GRBLinExpr();
-          for (Instance instance : network.getInstances()) {
-            GRBVar decisionVariable =
-                instanceDecisionVariables.get(instance).getDecisionVariable(p);
-            actorInPartitionExpr.addTerm(1.0, decisionVariable);
-          }
-          GRBVar actorsInPartition =
-              model.addVar(
-                  0.0,
-                  network.getInstances().size() + 1,
-                  0.0,
-                  GRB.INTEGER,
-                  "actors_in_" + p.toString());
-          model.addConstr(
-              actorsInPartition,
-              GRB.EQUAL,
-              actorInPartitionExpr,
-              "constraint_actors_in_" + p.toString());
+        GRBLinExpr actorInPartitionExpr = new GRBLinExpr();
+        for (Instance instance : network.getInstances()) {
+          GRBVar decisionVariable =
+              instanceDecisionVariables.get(instance).getDecisionVariable(p);
+          actorInPartitionExpr.addTerm(1.0, decisionVariable);
+        }
+        GRBVar actorsInPartition =
+            model.addVar(
+                0.0,
+                network.getInstances().size() + 1,
+                0.0,
+                GRB.INTEGER,
+                "actors_in_" + p.toString());
+        model.addConstr(
+            actorsInPartition,
+            GRB.EQUAL,
+            actorInPartitionExpr,
+            "constraint_actors_in_" + p.toString());
 
-          model.addConstr(
-              actorsInPartition, GRB.GREATER_EQUAL, 1.0, "constraint_used_" + p.toString());
+        model.addConstr(
+            actorsInPartition, GRB.GREATER_EQUAL, 1.0, "constraint_used_" + p.toString());
+
+      }
+      
+      {
+        GRBLinExpr actorsOnAccel = new GRBLinExpr();
+        for (Instance instance : network.getInstances()) {
+          GRBVar decisionVariable = instanceDecisionVariables.get(instance).getDecisionVariable(accelPartition);
+
         }
       }
       // Plink read/kernel/write times
@@ -257,8 +263,8 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
 
         GRBVar partitionExecTime =
             model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS, "T_exec_" + partition.toString());
-        if (partition.equals(plinkPartition)) {
-          partitionTimeExpression.addTerm(1, plinkTime);
+//        if (partition.equals(plinkPartition)) {
+//          partitionTimeExpression.addTerm(1, plinkTime);
 //          GRBVar plinkCoreTime =
 //              model.addVar(
 //                  0.0,
@@ -275,7 +281,7 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
 //          model.addGenConstrMax(
 //              partitionExecTime, args, 0.0, "constraint_T_exec_" + partition.toString());
 
-        }
+//        }
         model.addConstr(
             partitionExecTime,
             GRB.EQUAL,
@@ -285,7 +291,7 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
 
         partitionExecTimeList.add(partitionExecTime);
       }
-
+      partitionExecTimeList.add(plinkTime);
       GRBVar[] partitionExecTimeArray =
           partitionExecTimeList.toArray(new GRBVar[softwarePartitions.size()]);
       GRBVar executionTime = model.addVar(0.0, GRB.INFINITY, 0.0, GRB.CONTINUOUS, "T_exec");
