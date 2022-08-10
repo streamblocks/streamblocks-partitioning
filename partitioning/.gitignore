@@ -2,3 +2,5 @@
 .idea
 .settings
 platform-partition/target
+gurobi
+gurobi8.0.1_linux64.tar.gz
