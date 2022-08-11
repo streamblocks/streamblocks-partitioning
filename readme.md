@@ -93,7 +93,7 @@ interconnect (e.g., PCIe) for various buffer sizes. `bandwidth` models the
 software FIFO bandwidth within
 and across threads. To obtain the platform profile data consult [this guide](profiling/readme.md).
 
-
+### Profiling
 Software profiles can obtained by compiling a project for software-only execution.
 Suppose you have the followed the `PassThrough` example from the [streamblock-platform](https://github.com/streamblocks/streamblocks-platforms/readme.md) guide:
 ```bash
@@ -113,3 +113,90 @@ After building the binary, you can collect the hardware profile using:
 ```
 > ./PassThrough --hardware-profile=systemc_profile.xml
 ```
+
+### Picking the right frequency
+The `freq` field denotes the clock frequency at which the profiling is
+performed. For instance, OpenCL performance numbers are in nano seconds,
+therefore the frequency is 1GHz. The SystemC `freq` is an estimate of the final
+operating frequency on the FPGA. Note that you have to estimate this number,
+e.g., put everything on FPGA and implement your design and use the achieved
+frequency here as an estimate for any other partitioning. The software `freq` is
+the clock speed at which CPU performance counters work. For modern x86 processor
+this usually corresponds to the nominal processor speed, but for arm the number
+might be different.
+
+The bandwidth `freq` should be the same as the software `freq`. Since the
+profiling relies on the same methodology and performance counters.
+
+### Setting the multiplier
+Since we profile hardware performance through simulation, you may want to use a
+down sampled input to keep profiling times reasonable. If you do that you can
+still use the full input for software, all you need to do is to tell the
+partitioning tool to up-sample the hardware profiling numbers using the
+multiplier field.
+
+
+### The number of cores
+Setting the `core` field in the config file instructs the tool to try to find
+partitions up to the given core count. For instance, if you set the `core` field
+to 4, the tool will solve 4 different optimization problems (i.e., for 1, 2, 3,
+and 4 cores). Higher core count usually corresponds to longer run time.
+
+
+### Optimization mode
+You can set the `mode` field to either `heterogeneous` or `homogeneous`. In the
+former, the actor network is partitioned across CPU cores and an FPGA, whereas
+in the latter the work is only partitioned across multiple cores. Note that in
+`heterogeneous` mode, only actors that have a valid `systemc` profile will be
+considered for hardware. This is a way for you to _pin_ some actors to software
+by essentially excluding them from the `systemc` profile xml file.
+
+# How to use the partitioning results?
+The tool will generate a bunch of `.xcf` and `.xml` files. `xcf` files can be
+given to `streamblocks` using the `--xcf-path` to specify which actors are
+placed on hardware and which are placed on software. The `xml` files are loaded
+at runtime in the executable using the `--cfile` argument and specify the actor
+to thread mappings.
+
+```
+├── heterogeneous
+│   ├── 1 <== partitions found for a single core system
+│   │   ├── multicore
+│   │   │   ├── config_0.xml <== fed to --cfile argument at runtime
+│   │   │   ├── config_1.xml
+│   │   │   ├── config_2.xml
+│   │   │   └── config_3.xml
+│   │   └── xcf
+│   │       ├── configuration_0.xcf <== fed to streamblocks using --xcf-path
+│   │       ├── configuration_1.xcf
+│   │       ├── configuration_2.xcf
+│   │       └── configuration_3.xcf
+│   ├── 2 <=== partitions found for a dual core system
+│   │   ├── multicore
+│   │   │   ├── config_0.xml
+│   │   │   ├── config_1.xml
+│   │   │   └── config_2.xml
+│   │   └── xcf
+│   │       ├── configuration_0.xcf
+│   │       ├── configuration_1.xcf
+│   │       └── configuration_2.xcf
+|   ├── hardware.json
+├── unique
+│   ├── unique_0.xcf <=
+│   ├── unique_1.xcf
+```
+
+
+Each `xcf` file is therefore paired with an `xml` file. For instance,
+`heterogeneous/n/multicore/config_m.xml` should be used with an executable
+produced by `heterogeneous/n/xcf/configuration_m.xcf`.
+
+
+The `unique` directory enumerates all the distinct hardware partitions (i.e.,
+unique sub set of actors on hardware). This can be used to avoid redundant FPGA
+implementation, for instance `heterogeneous/1/xcf/configuration_2.xcf` might be
+the same as `heterogeneous/2/xcf/configuration_3.xcf`. The `json` files
+`hardware.json` contains a mapping from every
+`heterogeneous/n/xcf/configuration_m.xcf` to a `unique/unique_p.xcf` file.
+
+
