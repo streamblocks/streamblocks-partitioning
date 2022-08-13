@@ -1,0 +1,25 @@
+namespace hetero.simple:
+
+ 
+  actor Source(int payload_size) ==> int Out:
+    int counter := 0;
+    transmit: action ==> Out:[t]
+    guard counter < payload_size
+    var t = counter
+    do
+      counter := counter + 1;
+    end
+  end
+
+  actor Sink() int In ==>:
+    action In:[t] ==>
+    end
+  end
+
+  actor PlusPlus(int coeff) int In ==> int Out:
+    action In:[t] ==> Out:[coeff * t + 1]
+    end
+  end
+
+
+end

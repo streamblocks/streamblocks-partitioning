@@ -1,0 +1,248 @@
+namespace hetero.simple.loopback:
+
+  import entity hetero.simple.Source;
+  import entity hetero.simple.Sink;
+  import entity hetero.simple.PlusPlus;
+  
+  network Loopback1() ==> :
+
+    entities
+
+      source = Source(payload_size = 1 << 20);
+
+      adder = PlusPlus(coeff = 1) { partition = "hw"; };
+
+      sink = Sink();
+
+    structure
+      source.Out --> adder.In;
+      adder.Out --> sink.In;
+  end
+
+
+  network Loopback2() ==> :
+
+    entities
+
+      source1 = Source(payload_size = 1 << 20);
+      source2 = Source(payload_size = 1 << 20);
+
+      adder1 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder2 = PlusPlus(coeff = 1) { partition = "hw"; };
+
+      sink1 = Sink();
+      sink2 = Sink();
+
+    structure
+      source1.Out --> adder1.In;
+      adder1.Out --> sink1.In;
+
+      source2.Out --> adder2.In;
+      adder2.Out --> sink2.In;
+  end
+
+  network Loopback3() ==> :
+
+    entities
+
+      source1 = Source(payload_size = 1 << 20);
+      source2 = Source(payload_size = 1 << 20);
+      source3 = Source(payload_size = 1 << 20);
+
+      adder1 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder2 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder3 = PlusPlus(coeff = 1) { partition = "hw"; };
+
+      sink1 = Sink();
+      sink2 = Sink();
+      sink3 = Sink();
+
+    structure
+      source1.Out --> adder1.In;
+      adder1.Out --> sink1.In;
+
+      source2.Out --> adder2.In;
+      adder2.Out --> sink2.In;
+
+      source3.Out --> adder3.In;
+      adder3.Out --> sink3.In;
+
+  end
+
+  network Loopback4() ==> :
+
+    entities
+
+      source1 = Source(payload_size = 1 << 20);
+      source2 = Source(payload_size = 1 << 20);
+      source3 = Source(payload_size = 1 << 20);
+      source4 = Source(payload_size = 1 << 20);
+
+      adder1 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder2 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder3 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder4 = PlusPlus(coeff = 1) { partition = "hw"; };
+
+      sink1 = Sink();
+      sink2 = Sink();
+      sink3 = Sink();
+      sink4 = Sink();
+
+    structure
+      source1.Out --> adder1.In;
+      adder1.Out --> sink1.In;
+
+      source2.Out --> adder2.In;
+      adder2.Out --> sink2.In;
+
+      source3.Out --> adder3.In;
+      adder3.Out --> sink3.In;
+
+      source4.Out --> adder4.In;
+      adder4.Out --> sink4.In;
+      
+  end
+
+  network Loopback5() ==> :
+
+    entities
+
+      source1 = Source(payload_size = 1 << 20);
+      source2 = Source(payload_size = 1 << 20);
+      source3 = Source(payload_size = 1 << 20);
+      source4 = Source(payload_size = 1 << 20);
+      source5 = Source(payload_size = 1 << 20);
+
+      adder1 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder2 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder3 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder4 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder5 = PlusPlus(coeff = 1) { partition = "hw"; };
+
+      sink1 = Sink();
+      sink2 = Sink();
+      sink3 = Sink();
+      sink4 = Sink();
+      sink5 = Sink();
+
+    structure
+      source1.Out --> adder1.In;
+      adder1.Out --> sink1.In;
+
+      source2.Out --> adder2.In;
+      adder2.Out --> sink2.In;
+
+      source3.Out --> adder3.In;
+      adder3.Out --> sink3.In;
+
+      source4.Out --> adder4.In;
+      adder4.Out --> sink4.In;
+
+      source5.Out --> adder5.In;
+      adder5.Out --> sink5.In;
+      
+  end
+
+
+  network Loopback6() ==> :
+
+    entities
+
+      source1 = Source(payload_size = 1 << 20);
+      source2 = Source(payload_size = 1 << 20);
+      source3 = Source(payload_size = 1 << 20);
+      source4 = Source(payload_size = 1 << 20);
+      source5 = Source(payload_size = 1 << 20);
+      source6 = Source(payload_size = 1 << 20);
+
+      adder1 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder2 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder3 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder4 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder5 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder6 = PlusPlus(coeff = 1) { partition = "hw"; };
+
+      sink1 = Sink();
+      sink2 = Sink();
+      sink3 = Sink();
+      sink4 = Sink();
+      sink5 = Sink();
+      sink6 = Sink();
+
+    structure
+      source1.Out --> adder1.In;
+      adder1.Out --> sink1.In;
+
+      source2.Out --> adder2.In;
+      adder2.Out --> sink2.In;
+
+      source3.Out --> adder3.In;
+      adder3.Out --> sink3.In;
+
+      source4.Out --> adder4.In;
+      adder4.Out --> sink4.In;
+
+      source5.Out --> adder5.In;
+      adder5.Out --> sink5.In;
+
+      source6.Out --> adder6.In;
+      adder6.Out --> sink6.In;
+
+     
+      
+  end
+
+  network Loopback7() ==> :
+
+    entities
+
+      source1 = Source(payload_size = 1 << 20);
+      source2 = Source(payload_size = 1 << 20);
+      source3 = Source(payload_size = 1 << 20);
+      source4 = Source(payload_size = 1 << 20);
+      source5 = Source(payload_size = 1 << 20);
+      source6 = Source(payload_size = 1 << 20);
+      source7 = Source(payload_size = 1 << 20);
+
+      adder1 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder2 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder3 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder4 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder5 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder6 = PlusPlus(coeff = 1) { partition = "hw"; };
+      adder7 = PlusPlus(coeff = 1) { partition = "hw"; };
+
+      sink1 = Sink();
+      sink2 = Sink();
+      sink3 = Sink();
+      sink4 = Sink();
+      sink5 = Sink();
+      sink6 = Sink();
+      sink7 = Sink();
+
+    structure
+      source1.Out --> adder1.In;
+      adder1.Out --> sink1.In;
+
+      source2.Out --> adder2.In;
+      adder2.Out --> sink2.In;
+
+      source3.Out --> adder3.In;
+      adder3.Out --> sink3.In;
+
+      source4.Out --> adder4.In;
+      adder4.Out --> sink4.In;
+
+      source5.Out --> adder5.In;
+      adder5.Out --> sink5.In;
+
+      source6.Out --> adder6.In;
+      adder6.Out --> sink6.In;
+
+      source7.Out --> adder7.In;
+      adder7.Out --> sink7.In;
+      
+  end
+  
+
+end

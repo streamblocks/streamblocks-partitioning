@@ -8,7 +8,7 @@ set(CMAKE_C_STANDARD 11)
 
 set(NUM_LOOPS_VALUE "1000000" CACHE STRING "Number repeated experiments")
 set(BUFFER_SIZE_MIN "8" CACHE STRING "Minimum size of the FIFOs")
-set(BUFFER_SIZE_MAX "4194304" CACHE STRING "Maximum size of the FIFOs")
+set(BUFFER_SIZE_MAX "8192" CACHE STRING "Maximum size of the FIFOs")
 
 
 # -- Default C Flags
@@ -24,7 +24,7 @@ set(extra_includes)
 # -- Include directories
 # include_directories(lib/art-runtime/include)
 
-# -- Add sub directories 
+# -- Add sub directories
 add_subdirectory(lib)
 
 # -- configure the execution script
@@ -34,7 +34,7 @@ configure_file(${PROJECT_SOURCE_DIR}/scripts/config.xml.in ${EXECUTABLE_OUTPUT_P
 set(buff_sz ${BUFFER_SIZE_MIN})
 while(${buff_sz} LESS_EQUAL ${BUFFER_SIZE_MAX})
 
-	# message(STATUS "buff_sz=${buff_sz}")	
+	# message(STATUS "buff_sz=${buff_sz}")
 	set(TARGET_NAME ${PROJECT_NAME}_${buff_sz}_${NUM_LOOPS_VALUE})
 	add_executable(${TARGET_NAME} src/main.cc src/timed_source.cc src/pass_through.cc)
 	target_include_directories(${TARGET_NAME} PRIVATE lib/art-runtime/include)
@@ -42,7 +42,7 @@ while(${buff_sz} LESS_EQUAL ${BUFFER_SIZE_MAX})
 	target_compile_definitions(${TARGET_NAME} PRIVATE -DBUFFER_SIZE=${buff_sz} -DNUM_LOOPS=${NUM_LOOPS_VALUE})
 	set_target_properties(
 		${TARGET_NAME}
-		PROPERTIES 
+		PROPERTIES
 		CXX_STANDARD 14
 		CXX_STANDARD_REQUIRED YES
 	)
