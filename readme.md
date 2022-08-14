@@ -27,12 +27,12 @@ We use a mixed-integer linear programming approach to partition the design
 across hardware and software. To solve the formulas, we rely on Gurobi 8.0.1
 which is a commercial optimizer with free academic licenses. Please head over to
 [gurobi](https://www.gurobi.com/academia/academic-program-and-licenses/) to get
-a license and then download version 8.0.1:
+a license and then download version 8.1.0:
 
 ```
-> wget https://packages.gurobi.com/8.0/gurobi8.0.1_linux64.tar.gz
+> wget https://packages.gurobi.com/8.1/gurobi8.1.0_linux64.tar.gz
 > mkdir -p gurobi
-> tar -xzf gurobi8.0.1_linux64.tar.gz -C gurobi
+> tar -xzf gurobi8.1.0_linux64.tar.gz -C gurobi
 ```
 
 Activate your license:
@@ -40,9 +40,11 @@ Activate your license:
 ./gurobi/gurobi801/linux64/bin/grbgetkey ${YOUR_LICENSE}
 ```
 
-To use the Java bindings you need to include `gurobi/gurobi801/linux64/lib/`
+To use the Java bindings you need to include `gurobi/gurobi810/linux64/lib/`
 in your `LD_LIBRARY_PATH`.
-
+```
+export LD_LIBRARY_PATH=${STREAMBLOCKS_HOME}/streamblocks-partitioning/partitioning/gurobi/gurobi810/linux64/lib
+```
 
 We rely on program profiles to perform partitioning. Although software profiles
 can be easily obtained through real execution for hardware profiles we rely on
@@ -102,8 +104,8 @@ Suppose you have the followed the `PassThrough` example from the [streamblock-pl
 Will log the per-actor software profile in the `software_profile.xml`.
 
 
-Hardware profiles requires a bit more work. When compiling CAL, pass `--set
-enable-systemc=on` to `streamblocks` to generate code needed for
+Hardware profiles requires a bit more work. When compiling CAL, pass `--set enable-systemc=on` to
+`streamblocks` to generate code needed for
 simulation-based profiling. The `Streamblocks.cmake` file in
 [streamblocks-examples](https://github.com/streamblocks/streamblocks-examples/Streamblocks.cmake)
 provides a handy function for generating simulation code which we recommend you

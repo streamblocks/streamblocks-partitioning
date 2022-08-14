@@ -439,7 +439,10 @@ public class PartitioningAnalysisPhase implements Phase {
 
     for (Instance instance : this.task.getNetwork().getInstances()) {
       Double sw = this.multicoreDB.getInstanceTicks(instance) * this.multicoreClockPeriod * 1e3;
-      Double hw = this.accelDB.getInstanceTicks(instance) * this.accelClockPeriod * 1e3;
+      Double hw = Double.valueOf(0.0);
+      if (this.accelDB != null) {
+        hw = this.accelDB.getInstanceTicks(instance) * this.accelClockPeriod * 1e3;
+      }
       System.out.printf("%20s:\t\t%06.4f\t\t%06.4f\t\t(ms)\n", instance.getInstanceName(), sw, hw);
     }
   }
