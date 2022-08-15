@@ -1,5 +1,5 @@
 # -- Generated from ch.epfl.mpeg4.part2.SB_Top_Parallel
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.3)
 
 project (bandwidth)
 

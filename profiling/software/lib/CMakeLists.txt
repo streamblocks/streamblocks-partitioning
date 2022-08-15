@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.3)
 
 project(art-lib)
 
@@ -22,7 +22,7 @@ endif()
 include_directories(
             art-runtime/include
             art-native/include
-            
+
     )
 add_subdirectory(art-runtime)
 # add_subdirectory(art-native)
