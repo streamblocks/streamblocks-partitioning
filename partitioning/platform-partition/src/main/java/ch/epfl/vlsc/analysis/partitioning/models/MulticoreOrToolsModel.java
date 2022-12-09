@@ -1,6 +1,7 @@
 package ch.epfl.vlsc.analysis.partitioning.models;
 
 import se.lth.cs.tycho.compiler.CompilationTask;
+import se.lth.cs.tycho.compiler.Compiler;
 import ch.epfl.vlsc.analysis.partitioning.parser.CommonProfileDataBase;
 import ch.epfl.vlsc.analysis.partitioning.parser.MulticoreProfileDataBase;
 
@@ -12,15 +13,38 @@ import se.lth.cs.tycho.reporting.CompilationException;
 import se.lth.cs.tycho.reporting.Diagnostic;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+
+import javax.xml.transform.OutputKeys;
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import javax.xml.bind.JAXBException;
+import javax.xml.parsers.DocumentBuilderFactory;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import com.google.ortools.Loader;
 import com.google.ortools.linearsolver.MPConstraint;
 import com.google.ortools.linearsolver.MPObjective;
 import com.google.ortools.linearsolver.MPSolver;
 import com.google.ortools.linearsolver.MPVariable;
+import ch.epfl.vlsc.analysis.partitioning.models.PerformanceModel.Partition;
+import ch.epfl.vlsc.analysis.partitioning.models.PerformanceModel.PartitioningSolution;
+import ch.epfl.vlsc.analysis.partitioning.models.PerformanceModel.SoftwarePartition;
 
 public class MulticoreOrToolsModel {
 
@@ -30,80 +54,6 @@ public class MulticoreOrToolsModel {
     private final Double multicoreClockPeriod;
     private final Double timeLimit;
     private final ImmutableList<Instance> softwareActors;
-
-    public static class HardwarePartition implements TypedPartition {
-
-        private final int index;
-
-        public HardwarePartition(int i) {
-            this.index = i;
-        }
-
-        @Override
-        public int toIndex() {
-            return this.index;
-        }
-
-        @Override
-        public String toString() {
-            return "accel";
-        }
-    }
-
-    public static class SoftwarePartition implements TypedPartition {
-        private final int index;
-
-        public SoftwarePartition(int index) {
-            this.index = index;
-        }
-
-        @Override
-        public int toIndex() {
-            return this.index;
-        }
-
-        @Override
-        public String toString() {
-            return "core_" + this.index;
-        }
-    }
-
-    public abstract interface TypedPartition {
-        public abstract int toIndex();
-
-        public abstract String toString();
-    }
-
-    public static class Partition<T> {
-
-        private final ImmutableList<T> instances;
-        private final TypedPartition ptype;
-
-        public Partition(ImmutableList<T> instances, TypedPartition p) {
-            this.instances = instances;
-            this.ptype = p;
-        }
-
-        public ImmutableList<T> getInstances() {
-            return this.instances;
-        }
-
-        public TypedPartition getPartitionType() {
-            return this.ptype;
-        }
-    }
-
-    public static class PartitioningSolution<T> {
-        private final ImmutableList<Partition<T>> partitions;
-
-        public PartitioningSolution(ImmutableList<Partition<T>> partitions) {
-            this.partitions = partitions;
-        }
-
-        public ImmutableList<Partition<T>> getPartitions() {
-            return this.partitions;
-        }
-    }
 
     public MulticoreOrToolsModel(
             CompilationTask task,
@@ -134,7 +84,8 @@ public class MulticoreOrToolsModel {
         String name = end.getInstance().orElseThrow(
                 () -> new CompilationException(
                         new Diagnostic(Diagnostic.Kind.ERROR, "Could not find instance in connection")));
-        return task.getNetwork().getInstances().stream().filter(p -> p.getInstanceName() == name).findFirst()
+
+        return task.getNetwork().getInstances().stream().filter(p -> p.getInstanceName().equals(name)).findFirst()
                 .orElseThrow(
                         () -> new CompilationException(
                                 new Diagnostic(
@@ -207,6 +158,64 @@ public class MulticoreOrToolsModel {
         return m;
     }
 
+    public void restrictedGrowthConstraint(MPSolver solver, ImmutableList<SoftwarePartition> partitionList, Map<Instance, Map<SoftwarePartition, MPVariable>> instanceDecisionVariables, int numberOfCores) {
+
+        Map<Instance, MPVariable> partitionNumbers = new HashMap<>();
+
+        for (Instance inst : task.getNetwork().getInstances()) {
+
+            MPVariable pNum = solver.makeIntVar(0, numberOfCores - 1, "pnum_" + inst.getInstanceName());
+            MPConstraint pConstr = solver.makeConstraint(0, 0, "pnum_" + inst.getInstanceName() + "_constr");
+            pConstr.setCoefficient(pNum, -1);
+            for (SoftwarePartition p : partitionList) {
+                pConstr.setCoefficient(instanceDecisionVariables.get(inst).get(p), p.toIndex());
+            }
+            // pNum = d_0_a * 0 + d_1_a * 1 + d_2_a * 2 + ... + d_n_a * n
+            // therefore, pNum indicates the partition number that inst is assigned to
+            partitionNumbers.put(inst, pNum);
+        }
+
+        // now that we have a mapping from instances to the partition numbers they may be assigned to, we can create the
+        // symmetry breaking constraints.
+        // 1. The first actors could be assigned to partition 0 or 1,
+        // i.e., 0 <= pNum_0  <= 1
+        // 2. pNum_j <= max(pNum_0, pNum_1, pNum_2, ..., pNum_(j-1)) + 1
+        // i.e., actor j could either be assigned to a new "unused core" or assigned to an already used one.
+        // For instance, if actor 0 is assigned to partition 0, then we can only assign actor 1 to partition 1
+        // or 0, but not partition 2 and so on.
+
+        // constraint for the first actor
+        {
+            Instance a0 = task.getNetwork().getInstances().get(0);
+            MPConstraint c0 = solver.makeConstraint(0, 1, "restrictedGrowth_" + a0.getInstanceName());
+            c0.setCoefficient(partitionNumbers.get(a0), 1);
+        }
+
+        for (int ix = 1; ix < task.getNetwork().getInstances().size(); ix ++) {
+
+            Instance inst = task.getNetwork().getInstances().get(ix);
+            ImmutableList.Builder<MPVariable> prevs = ImmutableList.builder();
+            for (int kx = 0; kx < ix; kx++) {
+                prevs.add(partitionNumbers.get(task.getNetwork().getInstances().get(kx)));
+            }
+            MPConstraint constr = solver.makeConstraint(0, 1, "restrictedGrowth_" + inst.getInstanceName());
+            MPVariable prevMax = makeMax(solver, prevs.build(), 0, numberOfCores, "rgMax_" + inst.getInstanceName());
+            constr.setCoefficient(partitionNumbers.get(inst), 1);
+            constr.setCoefficient(prevMax, -1);
+
+        }
+
+        // lastly, we add a constraint such that all cores are used, this is simply
+        // max(pNum_j) = numCores - 1
+
+        MPVariable maxPNum = makeMax(solver, partitionNumbers.values().stream().collect(ImmutableList.collector()),
+            0, numberOfCores, "max_pnum"
+        );
+        MPConstraint maxPNumIsNumCores = solver.makeConstraint(numberOfCores - 1, numberOfCores - 1);
+        maxPNumIsNumCores.setCoefficient(maxPNum, 1);
+
+    }
+
     public ImmutableList<PartitioningSolution<String>> solveModel(int numberOfCores) {
         Loader.loadNativeLibraries();
         MPSolver solver = MPSolver.createSolver("SCIP");
@@ -224,13 +233,14 @@ public class MulticoreOrToolsModel {
                                 i -> partitionList.stream().collect(
                                         Collectors.toMap(
                                                 Function.identity(),
-                                                p -> solver.makeBoolVar("d_" + p.index + "^" + i.getInstanceName())))
+                                                p -> solver.makeBoolVar(
+                                                        "d_" + p.toIndex() + "^" + i.getInstanceName())))
 
                         ));
         // every actor is only mapped to a single partition, i.e., we have forall a:
         // \sum_p (d_p^a) = 1
         for (Instance inst : task.getNetwork().getInstances()) {
-            MPConstraint constr = solver.makeConstraint(0, 1, inst.getInstanceName() + " unique partition");
+            MPConstraint constr = solver.makeConstraint(1, 1, inst.getInstanceName() + " unique partition");
             // zero out every coeff (this may not be necessary but the examples in or-tools
             // explicitly sets the coefficient of all variables)
             // instanceDecisionVariables.values().forEach(l -> l.values().forEach(d ->
@@ -315,8 +325,6 @@ public class MulticoreOrToolsModel {
             }
         }
 
-
-
         MPVariable globalTime = solver.makeNumVar(0.0, upperBoundGlobalCommTime, "T_inter");
         MPConstraint gTimeConstr = solver.makeConstraint(0.0, 0.0); // T_inter = sum(..), i.e., sum(..) - T_iter = 0
         gTimeConstr.setCoefficient(globalTime, -1);
@@ -348,7 +356,11 @@ public class MulticoreOrToolsModel {
 
         }
 
-        MPVariable execTimeMax = makeMax(solver, partitionTime.values().stream().collect(ImmutableList.collector()), 0, upperBoundExecutionTime, "T_exec");
+
+        restrictedGrowthConstraint(solver, partitionList, instanceDecisionVariables, numberOfCores);
+
+        MPVariable execTimeMax = makeMax(solver, partitionTime.values().stream().collect(ImmutableList.collector()), 0,
+                upperBoundExecutionTime, "T_exec");
         MPVariable localTimeMax = makeMax(solver, localCommTime.values().stream().collect(ImmutableList.collector()), 0,
                 upperBoundLocalCommTime, "T_intra");
 
@@ -358,21 +370,179 @@ public class MulticoreOrToolsModel {
         objective.setCoefficient(localTimeMax, 1);
         objective.setCoefficient(globalTime, 1);
         objective.setMinimization();
-        solver.setTimeLimit(10 * 60 * 1000); // 10 minutes
-
+        solver.setTimeLimit(timeLimit.intValue() * 1000); // * 1000 because solver accepts timeout in ms
+        dumpModel(solver, numberOfCores);
+        context.getReporter().report(new Diagnostic(Diagnostic.Kind.INFO, "Solving model for  " + numberOfCores + " cores"));
         final MPSolver.ResultStatus resultStatus = solver.solve();
-        if (resultStatus == MPSolver.ResultStatus.OPTIMAL) {
+        // solver.exportModelAsMpsFormat();
+        if (resultStatus == MPSolver.ResultStatus.OPTIMAL || resultStatus == MPSolver.ResultStatus.FEASIBLE) {
 
-        } else if (resultStatus == MPSolver.ResultStatus.FEASIBLE) {
+            // collect the solution (sadly there is a single one with the MPSolver)
+            context.getReporter().report(new Diagnostic(Diagnostic.Kind.INFO,
+                    "The problem is " + resultStatus + " for " + numberOfCores + " cores"));
+            ImmutableList.Builder<Partition<String>> pBuilder = ImmutableList.builder();
+            Map<Instance, SoftwarePartition> collectedInstances = new HashMap<>();
 
+            for (SoftwarePartition p : partitionList) {
+                // collect all the actors that are in p
+                ImmutableList.Builder<String> instancesInP = ImmutableList.builder();
+                for (Instance inst : task.getNetwork().getInstances()) {
+
+                    boolean assigned = instanceDecisionVariables.get(inst).get(p).solutionValue() == 1;
+                    if (assigned) {
+                        instancesInP.add(inst.getInstanceName());
+                        if (collectedInstances.containsKey(inst)) {
+                            throw new CompilationException(new Diagnostic(Diagnostic.Kind.ERROR,
+                                    String.format("%s is assigned to partitions %d and %d", inst.getInstanceName(),
+                                            collectedInstances.get(inst).toIndex(), p.toIndex())));
+                        }
+                        collectedInstances.put(inst, p);
+                    }
+
+                }
+                pBuilder.add(new Partition<>(instancesInP.build(), p));
+            }
+            return ImmutableList.of(new PartitioningSolution<>(pBuilder.build()));
         } else {
-            throw new CompilationException(new Diagnostic(Diagnostic.Kind.ERROR, "Could not handle result status \"" + resultStatus.toString() + "\"!" ));
+            throw new CompilationException(new Diagnostic(Diagnostic.Kind.ERROR,
+                    "Could not handle result status \"" + resultStatus.toString() + "\"!"));
         }
 
-        return ImmutableList.empty();
     }
 
+    public void dumpModel(MPSolver solver, int numberOfCores) {
 
-    // private PartitioningSolution<String>
+        Path dumpPath = context.getConfiguration().get(Compiler.targetPath).resolve("simple").resolve(String.valueOf(numberOfCores)).resolve("model.lp");
+        context.getReporter().report(new Diagnostic(Diagnostic.Kind.INFO, "Dumping model to " + dumpPath));
+        try {
+            Files.createDirectories(dumpPath.getParent());
+            PrintWriter writer = new PrintWriter(dumpPath.toFile());
+            writer.print(solver.exportModelAsLpFormat());
+            writer.close();
+        } catch (FileNotFoundException e) {
+            throw new CompilationException(
+                    new Diagnostic(Diagnostic.Kind.ERROR, "Could not open file to dump the model to " + dumpPath));
+        } catch (IOException e) {
+            throw new CompilationException(
+                    new Diagnostic(Diagnostic.Kind.ERROR, "Could not create directory to dump the model to " + dumpPath));
+        }
+
+    }
+
+    public void dumpMulticoreConfig(
+            String name,
+            PartitioningSolution<String> partitionMap,
+            MulticoreProfileDataBase multicoreDb) {
+
+        File configFile = new File(name);
+
+        try {
+            // the config xml doc
+            Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().newDocument();
+            Element configRoot = doc.createElement("configuration");
+            doc.appendChild(configRoot);
+            Element partitioningRoot = doc.createElement("partitioning");
+            configRoot.appendChild(partitioningRoot);
+
+            ImmutableList.Builder<String> availableInstancesBuilder = ImmutableList.builder();
+
+            for (Partition<String> partition : partitionMap.getPartitions()) {
+                ImmutableList<String> instances = partition.getInstances();
+                if (!instances.isEmpty()) {
+                    Element partitionRoot = doc.createElement("partition");
+
+                    partitionRoot.setAttribute("id", String.valueOf(partition.getPartitionType().toIndex()));
+                    instances.forEach(
+                            instance -> {
+                                Element instanceRoot = doc.createElement("instance");
+                                instanceRoot.setAttribute("id", instance);
+                                partitionRoot.appendChild(instanceRoot);
+                            });
+                    partitioningRoot.appendChild(partitionRoot);
+                    availableInstancesBuilder.addAll(instances);
+                }
+            }
+
+            Element connectionsRoot = doc.createElement("connections");
+
+            ImmutableList<String> availableInstances = availableInstancesBuilder.build();
+
+            Optional<String> virtualActor = Optional.of("system_plink_0");
+            for (Connection connection : task.getNetwork().getConnections()) {
+
+                String sourceInstance = connection
+                        .getSource()
+                        .getInstance()
+                        .orElseThrow(
+                                () -> new CompilationException(
+                                        new Diagnostic(
+                                                Diagnostic.Kind.ERROR,
+                                                "The network contains a "
+                                                        + "dangling connection "
+                                                        + connection.toString())));
+                String targetInstance = connection
+                        .getTarget()
+                        .getInstance()
+                        .orElseThrow(
+                                () -> new CompilationException(
+                                        new Diagnostic(
+                                                Diagnostic.Kind.ERROR,
+                                                "The network contains a "
+                                                        + "dangling connection "
+                                                        + connection.toString())));
+
+                String sourcePort = connection.getSource().getPort();
+                String targetPort = connection.getTarget().getPort();
+                Element fifoConnectionElem = doc.createElement("fifo-connection");
+                String depth = String.valueOf(multicoreDb.getConnectionSettingsDataBase().get(connection).getDepth());
+                if (availableInstances.contains(sourceInstance)
+                        && availableInstances.contains(targetInstance)) {
+                    fifoConnectionElem.setAttribute("source", sourceInstance);
+                    fifoConnectionElem.setAttribute("target", targetInstance);
+                    fifoConnectionElem.setAttribute("source-port", sourcePort);
+                    fifoConnectionElem.setAttribute("target-port", targetPort);
+                    fifoConnectionElem.setAttribute("size", depth);
+                    connectionsRoot.appendChild(fifoConnectionElem);
+                } else if (availableInstances.contains(sourceInstance)
+                        && !availableInstances.contains(targetInstance)) {
+                    fifoConnectionElem.setAttribute("source", sourceInstance);
+                    fifoConnectionElem.setAttribute("target", virtualActor.get());
+                    fifoConnectionElem.setAttribute("source-port", sourcePort);
+                    fifoConnectionElem.setAttribute(
+                            "target-port",
+                            sourceInstance + "_" + sourcePort + "_" + targetInstance + "_" + targetPort);
+                    fifoConnectionElem.setAttribute("size", depth);
+                    connectionsRoot.appendChild(fifoConnectionElem);
+                } else if (!availableInstances.contains(sourceInstance)
+                        && availableInstances.contains(targetInstance)) {
+                    fifoConnectionElem.setAttribute("source", virtualActor.get());
+                    fifoConnectionElem.setAttribute("target", targetInstance);
+                    fifoConnectionElem.setAttribute(
+                            "source-port",
+                            sourceInstance + "_" + sourcePort + "_" + targetInstance + "_" + targetPort);
+                    fifoConnectionElem.setAttribute("target-port", targetPort);
+                    fifoConnectionElem.setAttribute("size", depth);
+                    connectionsRoot.appendChild(fifoConnectionElem);
+                }
+            }
+
+            configRoot.appendChild(connectionsRoot);
+
+            StreamResult configStream = new StreamResult(configFile);
+            DOMSource configDom = new DOMSource(doc);
+            Transformer configTransformer = TransformerFactory.newInstance().newTransformer();
+            configTransformer.setOutputProperty(OutputKeys.INDENT, "yes");
+            configTransformer.transform(configDom, configStream);
+
+            context
+                    .getReporter()
+                    .report(
+                            new Diagnostic(
+                                    Diagnostic.Kind.INFO, "Config file saved to " + configFile.toString()));
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
 
 }

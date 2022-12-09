@@ -24,7 +24,7 @@
         <dependency>
             <groupId>com.google.ortools</groupId>
             <artifactId>ortools-java</artifactId>
-            <version>9.5.2237</version>
+            <version>9.3.10497</version>
         </dependency>
         <dependency>
             <groupId>com.google.code.gson</groupId>

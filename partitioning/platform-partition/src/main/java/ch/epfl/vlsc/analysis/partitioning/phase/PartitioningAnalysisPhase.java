@@ -1,6 +1,7 @@
 package ch.epfl.vlsc.analysis.partitioning.phase;
 
 import ch.epfl.vlsc.analysis.partitioning.models.HeterogeneousModel;
+import ch.epfl.vlsc.analysis.partitioning.models.MulticoreOrToolsModel;
 import ch.epfl.vlsc.analysis.partitioning.models.MulticorePerformanceModel;
 import ch.epfl.vlsc.analysis.partitioning.models.PerformanceModel;
 
@@ -11,7 +12,6 @@ import ch.epfl.vlsc.analysis.partitioning.util.PartitionSettings;
 import ch.epfl.vlsc.analysis.partitioning.util.ProfileData;
 import ch.epfl.vlsc.analysis.partitioning.util.SolutionIdentity;
 import com.google.gson.*;
-
 
 import se.lth.cs.tycho.compiler.CompilationTask;
 import se.lth.cs.tycho.compiler.Context;
@@ -70,7 +70,10 @@ public class PartitioningAnalysisPhase implements Phase {
 
   private JsonConfiguration parseConfig(CompilationTask task, Context context) {
     if (!context.getConfiguration().isDefined(PartitionSettings.jsonConfig)) {
-      return null;
+      throw new CompilationException(
+        new Diagnostic(Diagnostic.Kind.ERROR, "config is not defined")
+      );
+
     }
     Path jsonPath = context.getConfiguration().get(PartitionSettings.jsonConfig);
     try {
@@ -145,6 +148,7 @@ public class PartitioningAnalysisPhase implements Phase {
           .report(new Diagnostic(Diagnostic.Kind.WARNING, "Configuration is not named!"));
     }
     switch (jConfig.mode) {
+
       case HETEROGENEOUS:
         if (jConfig.systemc == null) {
           context
@@ -167,7 +171,7 @@ public class PartitioningAnalysisPhase implements Phase {
         devParser.parseBandwidthProfile(Paths.get(jConfig.opencl.path));
 
         this.accelDB = devParser.getDataBase();
-
+      case SIMPLE:
       case HOMOGENEOUS:
         if (jConfig.bandwidth == null) {
           context
@@ -186,8 +190,7 @@ public class PartitioningAnalysisPhase implements Phase {
         checkProfileData("software", jConfig.software);
         this.multicoreClockPeriod = 1 / jConfig.software.freq * 1e-6;
 
-        MulticoreProfileParser multicoreParser =
-            new MulticoreProfileParser(task, context, this.multicoreClockPeriod);
+        MulticoreProfileParser multicoreParser = new MulticoreProfileParser(task, context, this.multicoreClockPeriod);
         multicoreParser.parseExecutionProfile(Paths.get(jConfig.software.path));
         multicoreParser.parseBandwidthProfile(Paths.get(jConfig.bandwidth.path));
         this.multicoreDB = multicoreParser.getDataBase();
@@ -218,21 +221,41 @@ public class PartitioningAnalysisPhase implements Phase {
     printStatistics();
 
     PartitionSettings.Mode mode = jConfig.mode;
-    Path logPath = context.getConfiguration().get(Compiler.targetPath).resolve("homogeneous");
+    if (mode == PartitionSettings.Mode.SIMPLE) {
+      Path logPath = context.getConfiguration().get(Compiler.targetPath).resolve("simple");
+      context
+          .getReporter()
+          .report(new Diagnostic(Diagnostic.Kind.INFO, "SIMPLE PARTITIONING MODE"));
+      MulticoreOrToolsModel perfModel = new MulticoreOrToolsModel(task, context,
+          multicoreDB, multicoreClockPeriod, 10 * 60.);
+      maxCores = Math.min(task.getNetwork().getInstances().size(), maxCores);
 
-    if (mode == PartitionSettings.Mode.HOMOGENEOUS) {
+      for (int cores = 2; cores <= maxCores; cores++) {
+        ImmutableList<PerformanceModel.PartitioningSolution<String>> solutions = perfModel.solveModel(cores);
+        File configDir = logPath.resolve(String.valueOf(cores)).toFile();
+        if (!configDir.exists()) {
+          configDir.mkdirs();
+        }
+        // System.out.println("Solved the model for " + cores + " cores");
+        for (PerformanceModel.PartitioningSolution<String> solution : solutions) {
+          perfModel.dumpMulticoreConfig(
+              configDir + "/config_" + solutions.indexOf(solution) + ".xml", solution, multicoreDB);
+        }
+      }
+
+    } else if (mode == PartitionSettings.Mode.HOMOGENEOUS) {
+      Path logPath = context.getConfiguration().get(Compiler.targetPath).resolve("homogeneous");
       context
           .getReporter()
           .report(new Diagnostic(Diagnostic.Kind.INFO, "HOMOGENEOUS PARTITIONING MODE"));
 
-      MulticorePerformanceModel perfModel =
-          new MulticorePerformanceModel(task, context, multicoreDB, multicoreClockPeriod, 300.0);
+      MulticorePerformanceModel perfModel = new MulticorePerformanceModel(task, context, multicoreDB,
+          multicoreClockPeriod, 300.0);
 
       maxCores = Math.min(perfModel.getMaxPartitions(), maxCores);
 
       for (int cores = 2; cores <= maxCores; cores++) {
-        ImmutableList<PerformanceModel.PartitioningSolution<String>> solutions =
-            perfModel.solveModel(cores);
+        ImmutableList<PerformanceModel.PartitioningSolution<String>> solutions = perfModel.solveModel(cores);
         File configDir = logPath.resolve(String.valueOf(cores)).toFile();
         if (!configDir.exists()) {
           configDir.mkdirs();
@@ -250,47 +273,45 @@ public class PartitioningAnalysisPhase implements Phase {
       context
           .getReporter()
           .report(new Diagnostic(Diagnostic.Kind.INFO, "HETEROGENEOUS PARTITIONING MODE"));
-      HeterogeneousModel perfModel =
-          new HeterogeneousModel(
-              task, context, multicoreDB, accelDB, multicoreClockPeriod, accelClockPeriod, 300.0);
+      HeterogeneousModel perfModel = new HeterogeneousModel(
+          task, context, multicoreDB, accelDB, multicoreClockPeriod, accelClockPeriod, 300.0);
       int solutionCount = 0;
-      Map<SolutionIdentity, Integer> solutionToUniqueHwMap =
-          new TreeMap<>(
-              (t1, t2) -> {
-                if (t1.numberOfCores < t2.numberOfCores) {
-                  return -1;
-                } else if (t1.numberOfCores > t2.numberOfCores) {
-                  return 1;
-                } else {
-                  return t1.solutionNumber - t2.solutionNumber;
-                }
-              });
+      Map<SolutionIdentity, Integer> solutionToUniqueHwMap = new TreeMap<>(
+          (t1, t2) -> {
+            if (t1.numberOfCores < t2.numberOfCores) {
+              return -1;
+            } else if (t1.numberOfCores > t2.numberOfCores) {
+              return 1;
+            } else {
+              return t1.solutionNumber - t2.solutionNumber;
+            }
+          });
       List<Set<String>> uniqueHardwarePartitions = new ArrayList<>();
       for (int cores = 1; cores <= maxCores; cores++) {
 
-        ImmutableList<PerformanceModel.PartitioningSolution<String>> solutions =
-            perfModel.solveModel(cores);
+        ImmutableList<PerformanceModel.PartitioningSolution<String>> solutions = perfModel.solveModel(cores);
 
-        // Find the hardware partition for every solution and add the hardware partition to the
-        // set of unique hardware partitions and update a map from solution ids to unique hw
+        // Find the hardware partition for every solution and add the hardware partition
+        // to the
+        // set of unique hardware partitions and update a map from solution ids to
+        // unique hw
         // partitions
         // sets
         int newSolutions = 0;
         for (PerformanceModel.PartitioningSolution<String> sol : solutions) {
           int solNumber = solutions.indexOf(sol);
-          Set<String> hwActors =
-              sol.getPartitions().stream()
-                  .filter(p -> p.getPartitionType() instanceof PerformanceModel.HardwarePartition)
-                  .flatMap(p -> p.getInstances().stream())
-                  .collect(Collectors.toSet());
+          Set<String> hwActors = sol.getPartitions().stream()
+              .filter(p -> p.getPartitionType() instanceof PerformanceModel.HardwarePartition)
+              .flatMap(p -> p.getInstances().stream())
+              .collect(Collectors.toSet());
           solutionToUniqueHwMap.put(new SolutionIdentity(cores, solNumber), hwActors.hashCode());
           int hashIndex = -2;
           if (!uniqueHardwarePartitions.contains(hwActors)) {
 
             uniqueHardwarePartitions.add(hwActors);
             hashIndex = solutionCount;
-            newSolutions ++;
-            solutionCount ++;
+            newSolutions++;
+            solutionCount++;
 
           } else {
             hashIndex = uniqueHardwarePartitions.indexOf(hwActors);
@@ -318,13 +339,12 @@ public class PartitioningAnalysisPhase implements Phase {
                       + " unique hardware partitions"));
       // keep the mappings from solutions to unique hardware partitions.
       try {
-        String jsonFileName =
-            context
-                .getConfiguration()
-                .get(Compiler.targetPath)
-                .resolve("heterogeneous/hardware.json")
-                .toAbsolutePath()
-                .toString();
+        String jsonFileName = context
+            .getConfiguration()
+            .get(Compiler.targetPath)
+            .resolve("heterogeneous/hardware.json")
+            .toAbsolutePath()
+            .toString();
         dumpUniqueHardwarePartitionJson(solutionToUniqueHwMap, jsonFileName);
       } catch (IOException e) {
         context
@@ -336,53 +356,44 @@ public class PartitioningAnalysisPhase implements Phase {
       }
 
       // create the unique xcf files
-      Map<Connection, Integer> bufferDepth =
-          task.getNetwork().getConnections().stream()
-              .collect(
-                  Collectors.toMap(
-                      Function.identity(),
-                      c -> this.multicoreDB.getConnectionSettingsDataBase().get(c).getDepth()));
-      File uniqueHardwareDir =
-          new File(context.getConfiguration().get(Compiler.targetPath).resolve("unique").toUri());
+      Map<Connection, Integer> bufferDepth = task.getNetwork().getConnections().stream()
+          .collect(
+              Collectors.toMap(
+                  Function.identity(),
+                  c -> this.multicoreDB.getConnectionSettingsDataBase().get(c).getDepth()));
+      File uniqueHardwareDir = new File(context.getConfiguration().get(Compiler.targetPath).resolve("unique").toUri());
       uniqueHardwareDir.mkdirs();
 
-      ImmutableList<Integer> hashCodes =
-          solutionToUniqueHwMap.values().stream().sorted().collect(ImmutableList.collector());
+      ImmutableList<Integer> hashCodes = solutionToUniqueHwMap.values().stream().sorted()
+          .collect(ImmutableList.collector());
 
       // dump unique xcf files
       for (Set<String> hardwareActorsNames : uniqueHardwarePartitions) {
 
-
         int hashIndex = uniqueHardwarePartitions.indexOf(hardwareActorsNames);
 
-        ImmutableList<Instance> hardwareActors =
-            task.getNetwork().getInstances().stream()
-                .filter(p -> hardwareActorsNames.contains(p.getInstanceName()))
-                .collect(ImmutableList.collector());
-        ImmutableList<Instance> softwareActors =
-            task.getNetwork().getInstances().stream()
-                .filter(p -> !hardwareActors.contains(p))
-                .collect(ImmutableList.collector());
+        ImmutableList<Instance> hardwareActors = task.getNetwork().getInstances().stream()
+            .filter(p -> hardwareActorsNames.contains(p.getInstanceName()))
+            .collect(ImmutableList.collector());
+        ImmutableList<Instance> softwareActors = task.getNetwork().getInstances().stream()
+            .filter(p -> !hardwareActors.contains(p))
+            .collect(ImmutableList.collector());
 
-        PerformanceModel.Partition<Instance> hwPartition =
-            new PerformanceModel.Partition<>(
-                hardwareActors, new PerformanceModel.HardwarePartition(1));
-        PerformanceModel.Partition<Instance> swPartition =
-            new PerformanceModel.Partition<>(
-                softwareActors, new PerformanceModel.SoftwarePartition(0));
-        ImmutableList.Builder<PerformanceModel.Partition<Instance>> partitions =
-            ImmutableList.builder();
+        PerformanceModel.Partition<Instance> hwPartition = new PerformanceModel.Partition<>(
+            hardwareActors, new PerformanceModel.HardwarePartition(1));
+        PerformanceModel.Partition<Instance> swPartition = new PerformanceModel.Partition<>(
+            softwareActors, new PerformanceModel.SoftwarePartition(0));
+        ImmutableList.Builder<PerformanceModel.Partition<Instance>> partitions = ImmutableList.builder();
         partitions.add(swPartition);
         partitions.add(hwPartition);
-        PerformanceModel.PartitioningSolution<Instance> sol =
-            new PerformanceModel.PartitioningSolution<>(partitions.build());
+        PerformanceModel.PartitioningSolution<Instance> sol = new PerformanceModel.PartitioningSolution<>(
+            partitions.build());
 
-        String xcfName =
-            uniqueHardwareDir
-                .toPath()
-                .resolve("unique_" + hashIndex + ".xcf")
-                .toAbsolutePath()
-                .toString();
+        String xcfName = uniqueHardwareDir
+            .toPath()
+            .resolve("unique_" + hashIndex + ".xcf")
+            .toAbsolutePath()
+            .toString();
         PerformanceModel.dumpXcfConfig(xcfName, sol, bufferDepth, task);
       }
     }
@@ -395,11 +406,12 @@ public class PartitioningAnalysisPhase implements Phase {
     // dump a mapping from solution ids to unique hardware sets (as hash codes)
     JsonArray jArray = new JsonArray();
     /**
-     * The solution mappings are serialized in a json as follows: { solutions: [ { "cores":
+     * The solution mappings are serialized in a json as follows: { solutions: [ {
+     * "cores":
      * CORE_COUNT, "index": SOLUTION_INDEX, "hash" : HASH_CODE },... ] }
      */
-    ImmutableList<Integer> hashCodes =
-        solutionToUniqueHwMap.values().stream().sorted().collect(ImmutableList.collector());
+    ImmutableList<Integer> hashCodes = solutionToUniqueHwMap.values().stream().sorted()
+        .collect(ImmutableList.collector());
 
     for (SolutionIdentity sol : solutionToUniqueHwMap.keySet()) {
 
@@ -427,12 +439,11 @@ public class PartitioningAnalysisPhase implements Phase {
 
   private void printStatistics() {
 
-    LinkedHashMap<Instance, Long> softwareInstances =
-        this.multicoreDB.getExecutionProfileDataBase().entrySet().stream()
-            .sorted(Map.Entry.comparingByValue())
-            .collect(
-                Collectors.toMap(
-                    Map.Entry::getKey, Map.Entry::getValue, (e1, e2) -> e1, LinkedHashMap::new));
+    LinkedHashMap<Instance, Long> softwareInstances = this.multicoreDB.getExecutionProfileDataBase().entrySet().stream()
+        .sorted(Map.Entry.comparingByValue())
+        .collect(
+            Collectors.toMap(
+                Map.Entry::getKey, Map.Entry::getValue, (e1, e2) -> e1, LinkedHashMap::new));
 
     System.out.println("Software actor stats:");
     System.out.println("Actor execution stats:\t\tSoftware\t\tHardware (ms)");

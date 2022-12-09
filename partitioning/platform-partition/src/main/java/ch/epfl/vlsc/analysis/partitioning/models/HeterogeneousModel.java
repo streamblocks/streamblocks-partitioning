@@ -161,7 +161,7 @@ public class HeterogeneousModel extends MulticorePerformanceModel {
             actorsInPartition, GRB.GREATER_EQUAL, 1.0, "constraint_used_" + p.toString());
 
       }
-      
+
       {
         GRBLinExpr actorsOnAccel = new GRBLinExpr();
         for (Instance instance : network.getInstances()) {

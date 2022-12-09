@@ -27,6 +27,8 @@ public class PartitionSettings {
         }
     };
     public enum Mode {
+        @SerializedName("simple")
+        SIMPLE,
         @SerializedName("homogeneous")
         HOMOGENEOUS,
         @SerializedName("heterogeneous")
